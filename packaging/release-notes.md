@@ -12,7 +12,14 @@ First time on a Mac: if macOS says it can't open the app, go to **System Setting
 
 Then follow the **Setup** window that opens by itself: click **Connect Twitch**, type your **Kick** channel, and/or enter your **Owncast** address and admin password. Full instructions: [README](https://github.com/korn788/BloodBos-music-request-bot#readme).
 
-## In this version
+## New in 1.0.1
+
+- **Fixed: the music video replaying the same few seconds right before a song ends.** When a song's audio got stuck for a moment (a network hiccup, or a song that goes quiet at its very end), the video kept playing, got pulled back, and played the same stretch again and again. Now the video waits for the audio — in the OBS widget and in the app's video window.
+- **The OBS widget reloads itself when you update the app**, so OBS never keeps running an old copy. Updating from 1.0.0: refresh the browser source once after installing (select it in OBS and click **Refresh**).
+- **Playlist export** suggests a title from the day the stream started, not the day you press Export.
+- Other Twitch or Kick tools set up on your computer can no longer change which app the sign-in buttons use.
+
+## In 1.0.0
 
 - **One app for Twitch, Kick and Owncast** — the separate Twitch bot and the .NET Owncast bot are now built in. Sign in with buttons: Twitch and Kick open their normal login pages, and if the last page won't load you can finish by pasting its address into Setup.
 - **Fixed: the music video looping right before a song ends.** When the song's audio ran a little longer than its video, both the OBS widget and the app's video window restarted the video from the beginning. The video now holds its last frame.

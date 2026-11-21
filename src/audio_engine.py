@@ -179,6 +179,7 @@ class AudioEngine:
         self._ended_gen = -1
         self._end_lock = threading.Lock()
         self._last_elapsed = 0.0   # last real position reading (see elapsed_seconds)
+        self._elapsed_moved = 0.0  # monotonic time that reading last changed (see clock_running)
 
         # Callbacks
         self.on_track_ended: Optional[Callable] = None
@@ -241,9 +242,31 @@ class AudioEngine:
             if self._player.is_playing() or st == PlayerState.PAUSED:
                 ms = self._player.get_time()
                 if ms is not None and ms >= 0:
-                    self._last_elapsed = ms / 1000.0
+                    value = ms / 1000.0
+                    if value != self._last_elapsed:
+                        self._last_elapsed = value
+                        self._elapsed_moved = time.monotonic()
             return self._last_elapsed
         return 0.0
+
+    # VLC moves the song position about four times a second. Not moving for
+    # this long while "playing" means the audio really is stuck.
+    CLOCK_STALL = 1.0
+
+    @property
+    def clock_running(self) -> bool:
+        """True while the song's position is really moving forward.
+
+        False while paused or loading, while VLC is buffering, and while a song
+        that has stopped making sound waits for the watchdog to end it. The
+        music-video players hold their picture while this is False. They used
+        to play on against a frozen position and get pulled back every few
+        seconds: the loop right before a song ended.
+        """
+        if self._state != PlayerState.PLAYING:
+            return False
+        self.elapsed_seconds                     # take a fresh reading
+        return time.monotonic() - self._elapsed_moved < self.CLOCK_STALL
 
     @property
     def duration_seconds(self) -> float:
@@ -390,6 +413,7 @@ class AudioEngine:
         self._play_generation += 1  # invalidates any watchdog from the previous track
         gen = self._play_generation
         self._last_elapsed = 0.0
+        self._elapsed_moved = 0.0
         self._set_state(PlayerState.LOADING)
         self._current_track = track
         self._mv_active = False

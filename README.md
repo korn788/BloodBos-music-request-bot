@@ -103,6 +103,9 @@ up above it. The **sound** plays through the app like any other program — your
 hear it if OBS captures your desktop audio (or add an *Application Audio Capture* source
 for BLOODBOS Radio on Windows).
 
+The browser source updates itself when you update the app. If the card or the music video
+ever acts strangely, select the source in OBS and click **Refresh**.
+
 ## Chat commands
 
 | Command | What it does | Who |

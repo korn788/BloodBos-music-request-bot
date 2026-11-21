@@ -110,24 +110,29 @@ let rafId=0;
    number parks this player a fixed distance behind the app's window even when
    its own corrector is perfect. So we anchor on the server's sample time and
    interpolate locally between polls. */
-const clock={base:0,at:0,paused:false,valid:false,resync:false};
+/* hold: the app says the song's position isn't moving (the audio is buffering,
+   or a song went quiet at its end and hasn't been ended yet). The clock stops
+   instead of running on: running on and pulling the video back every few
+   seconds replayed the same stretch of video, right before songs ended. */
+const clock={base:0,at:0,paused:false,hold:false,valid:false,resync:false};
 function clockNow(){
   if(!clock.valid)return 0;
-  if(clock.paused)return clock.base;
+  if(clock.paused||clock.hold)return clock.base;
   return clock.base+(performance.now()-clock.at)/1000;
 }
-function setClock(elapsed,elapsedAt,paused){
+function setClock(elapsed,elapsedAt,paused,hold){
   const nowMs=performance.now();
+  const stopped=paused||hold;
   let base=elapsed;
-  if(elapsedAt){                       // server-stamped: add the transit lag
+  if(elapsedAt&&!stopped){             // server-stamped: add the transit lag
     const lag=Date.now()/1000-elapsedAt;
     if(lag>0&&lag<2)base+=lag;         // ignore nonsense (clock skew, stalls)
   }
   // A discontinuity in the AUDIO clock is a user seek or a track restart —
   // snap to it instead of trying to trim our way there.
-  if(clock.valid&&!paused&&!clock.paused&&Math.abs(base-clockNow())>SYNC.JUMP)
+  if(clock.valid&&!stopped&&!clock.paused&&!clock.hold&&Math.abs(base-clockNow())>SYNC.JUMP)
     clock.resync=true;
-  clock.base=base;clock.at=nowMs;clock.paused=paused;clock.valid=true;
+  clock.base=base;clock.at=nowMs;clock.paused=paused;clock.hold=hold;clock.valid=true;
   lastElapsed=base;
 }
 
@@ -185,15 +190,16 @@ function startPaint(){if(!rafId)rafId=requestAnimationFrame(paint);}
 function stopPaint(){if(rafId){cancelAnimationFrame(rafId);rafId=0;}ctx.fillStyle='#000';ctx.fillRect(0,0,mvCanvas.width,mvCanvas.height);}
 
 let syncSettle=0, syncLastSeek=-1e9, syncRate=1;
+let endHoldAt=null;      // clock while holding the video's last frame (see syncTick)
 
 function showMV(id){if(mvShowing&&lastVideoId===id)return;
 mvVideo.src=STREAM+id;
-setRate(1);syncSettle=performance.now();syncLastSeek=-1e9;clock.resync=true;syncReady=false;posMark=null;syncStalls=0;hudSeeks=0;
+setRate(1);syncSettle=performance.now();syncLastSeek=-1e9;clock.resync=true;syncReady=false;posMark=null;syncStalls=0;hudSeeks=0;endHoldAt=null;
 // Land on the audio clock as soon as we can seek, then hold it with rate trim.
 mvVideo.addEventListener('loadedmetadata',()=>{try{mvVideo.currentTime=clockNow();}catch(_){}syncSettle=performance.now();},{once:true});
 mvVideo.play().catch(()=>{});screen.classList.add('open');document.body.classList.add('mv-playing');mvShowing=true;lastVideoId=id;startPaint();}
 
-var hideMV=function(){if(!mvShowing)return;screen.classList.remove('open');screen.classList.remove('settled');document.body.classList.remove('mv-playing');mvVideo.pause();setRate(1);mvVideo.src='';mvShowing=false;lastVideoId='';clock.valid=false;syncReady=false;posMark=null;stopPaint();}
+var hideMV=function(){if(!mvShowing)return;screen.classList.remove('open');screen.classList.remove('settled');document.body.classList.remove('mv-playing');mvVideo.pause();setRate(1);mvVideo.src='';mvShowing=false;lastVideoId='';clock.valid=false;syncReady=false;posMark=null;endHoldAt=null;stopPaint();}
 
 function setRate(r){if(Math.abs(r-syncRate)<0.001)return;try{mvVideo.playbackRate=r;syncRate=r;}catch(_){}}
 function hardSeek(t,nowMs){try{setRate(1);mvVideo.currentTime=Math.max(0,t);syncLastSeek=nowMs;syncSettle=nowMs;posMark=null;hudSeeks++;}catch(_){}}
@@ -238,7 +244,7 @@ function syncTick(){
   if(!mvShowing||!clock.valid)return;
   const nowMs=performance.now();
 
-  if(clock.paused){                       // pause means pause; mirror the app
+  if(clock.paused||clock.hold){            // paused, or the audio is stuck: wait on this frame
     if(!mvVideo.paused&&!mvVideo.ended){mvVideo.pause();setRate(1);}
     syncReady=false;return;
   }
@@ -248,18 +254,32 @@ function syncTick(){
   // (track changes, loading). Never let a bogus zero yank the video around.
   if(live<=0.05&&mvVideo.currentTime>5)return;
 
-  const vdur=mvVideo.duration;
-  if(isFinite(vdur)&&vdur>0){
-    if(live>=vdur-0.05){                  // audio is at/after the video's last frame
-      if(syncRate!==1)setRate(1);
-      return;                             // let it play out, then hold the last frame
-    }
-    if(mvVideo.ended){
-      if(vdur-live<=END_SLACK)return;     // finished a touch early: hold the last frame
-      // The clock is well inside the video again (seek back / replayed song):
-      // seek FIRST so the element is no longer "ended", then play from there.
+  // ---- end of the video ----
+  // Once the video reaches its end it holds the last frame for the rest of the
+  // song. Only a real rewind (the clock jumping back: a seek, or the same song
+  // played again) brings it back. "The clock is still short of the video's
+  // end" is NOT a reason — a video running a little ahead of the audio, or
+  // ending a little early, used to jump back and replay its last seconds.
+  // Works even when the browser doesn't know the video's length.
+  const vdur=mvVideo.duration, known=isFinite(vdur)&&vdur>0;
+  // At its end = it played to (about) its last frame. A stream that stopped
+  // well short of its length was cut off, not finished: the resume branch below
+  // picks it back up at the clock.
+  const atEnd=mvVideo.ended?(!known||mvVideo.currentTime>=vdur-END_SLACK)
+                           :(known&&mvVideo.currentTime>=vdur-0.05);
+  if(endHoldAt===null&&(atEnd||(known&&live>=vdur-0.05)))
+    endHoldAt=live;
+  if(endHoldAt!==null){
+    if(live<endHoldAt-SYNC.JUMP&&(!known||live<vdur-END_SLACK)){
+      endHoldAt=null;
+      // seek FIRST so the element is no longer "ended", then play from there
       hardSeek(live,nowMs);mvVideo.play().catch(()=>{});syncReady=false;return;
     }
+    endHoldAt=Math.max(endHoldAt,live);
+    if(syncRate!==1)setRate(1);
+    // stopped by a hold just short of the end: let it finish (never from 0)
+    if(mvVideo.paused&&!mvVideo.ended)mvVideo.play().catch(()=>{});
+    return;                               // let it play out, then hold the last frame
   }
 
   if(mvVideo.paused){                     // resuming: re-anchor, don't inherit
@@ -324,7 +344,11 @@ if(SYNC_DEBUG){
   },200);
 }
 
+let pageVersion='';
 async function poll(){try{const res=await fetch(STATUS);const d=await res.json();
+// OBS keeps a browser source's page running for days: after an app update,
+// load the new widget instead of running the old code against the new app.
+if(d&&d.appVersion){if(!pageVersion)pageVersion=d.appVersion;else if(d.appVersion!==pageVersion){location.reload();return;}}
 if(!d||!d.title){if(wasVisible){card.classList.remove('visible');hideMV();wasVisible=false;}return;}
 const isSC=d.scActive===true,src=isSC?'soundcloud':'youtube';
 badge.textContent=isSC?'SoundCloud':'YouTube';badge.className='badge '+src;fillEl.className='fill '+src;
@@ -334,7 +358,7 @@ if(d.syncRelease!=null)SYNC.RELEASE=d.syncRelease;
 if(d.syncTrim!=null)SYNC.TRIM=d.syncTrim;
 if(d.syncHard!=null)SYNC.HARD=d.syncHard;
 const e0=d.elapsedSeconds||d.elapsed||0;
-setClock(e0,d.elapsedAt||0,!!d.isPaused);
+setClock(e0,d.elapsedAt||0,!!d.isPaused,d.clockRunning===false);
 if(d.mvActive&&d.videoId){mvBadge.style.display='inline-block';showMV(d.videoId);setPollRate(POLL_IDLE);}
 else{mvBadge.style.display='none';hideMV();
 // isMV means the engine has flagged a music video but hasn't finished

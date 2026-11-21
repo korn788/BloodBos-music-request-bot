@@ -11,6 +11,12 @@ import urllib.error
 from urllib.parse import urlparse
 from typing import Optional, Callable
 
+# The OBS widget reloads itself when this changes (see widget.html poll()).
+try:
+    from version import __version__ as APP_VERSION
+except Exception:
+    APP_VERSION = ""
+
 # The spool fetches googlevideo URLs resolved by audio_engine's yt-dlp, and a
 # GVS URL is bound to the user-agent it was resolved under. This used to be an
 # unrelated hardcoded Chrome string, which meant the spool was fetching with a
@@ -334,16 +340,33 @@ class StatusServer:
             sp = _Spool(video_id, self._get_video_url,
                         self._upstream_get, self._drop_upstream)
             self._spools[video_id] = sp
-            # Keep current + previous (covers prefetch / quick Back presses);
-            # evict anything older so disk use stays bounded.
-            if len(self._spools) > 2:
-                oldest = sorted(self._spools.items(),
-                                key=lambda kv: kv[1].last_access)
-                for vid, old in oldest[:len(self._spools) - 2]:
-                    if vid != video_id:
-                        old.close()
-                        self._spools.pop(vid, None)
+            # Keep previous + current + the prefetched next one; evict anything
+            # older so disk use stays bounded. (With room for only two, warming
+            # the next song could delete the video still on screen once the
+            # players had buffered it and stopped reading.)
+            extra = len(self._spools) - 3
+            if extra > 0:
+                keep = {video_id, self._on_screen_video()}
+                for vid, old in sorted(self._spools.items(),
+                                       key=lambda kv: kv[1].last_access):
+                    if extra <= 0:
+                        break
+                    if vid in keep:
+                        continue        # never pull the video that's on screen
+                    old.close()
+                    self._spools.pop(vid, None)
+                    extra -= 1
             return sp
+
+    def _on_screen_video(self):
+        """The music video showing right now. A player that has buffered the
+        whole video stops asking for it, so "least recently read" alone could
+        pick the very video on screen."""
+        try:
+            st = (self._get_status() if self._get_status else None) or {}
+        except Exception:
+            return None
+        return st.get("videoId") if st.get("mvActive") else None
 
     def _drop_upstream(self):
         """Close and forget this thread's upstream connection."""
@@ -450,7 +473,8 @@ class StatusServer:
 
                 # ── Status API ──
                 if path == "/status":
-                    data = get_status()
+                    data = dict(get_status() or {})
+                    data["appVersion"] = APP_VERSION   # the widget reloads when this changes
                     self._json_response(data)
                     return
 

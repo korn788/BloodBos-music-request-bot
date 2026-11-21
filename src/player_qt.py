@@ -625,9 +625,13 @@ class VideoController:
     # The old code saw VLC's "Ended" state as a dead player and restarted the
     # video from the top every 3 seconds (then the sync seeked it back to the
     # end, where it ended again) — the loop right before a song finished.
-    # Now the video freezes on its last frame and stays there.
+    # Now the video freezes on its last frame and stays there for the rest of
+    # the song. Only a real rewind of the song (the audio clock jumping back)
+    # brings it back — not "the audio is still short of the video's end": a
+    # video running a little ahead of the audio, or ending a little early,
+    # used to jump back and replay its last seconds right before the song ended.
     END_FREEZE = 0.45   # s before the video's end: pause on this frame
-    END_SLACK = 2.0     # s: audio this far back inside the video = a real seek back
+    END_SLACK = 2.0     # s: the rewound audio must land at least this far inside
 
     def __init__(self, surface, engine=None):
         self.available = vlc is not None
@@ -640,6 +644,8 @@ class VideoController:
         self._key = None             # identity of the track the media belongs to
         self._want_pause = False
         self._held = False           # frozen on the last frame (see END_FREEZE)
+        self._hold_at = None         # furthest audio position seen while frozen
+        self._stall_hold = False     # paused because the audio is stuck (see sync_to)
         self._length = 0.0           # video length in seconds, once VLC knows it
         self._vt_mark = (None, 0.0)  # (get_time() value, monotonic when it changed)
         # Sync state (see sync_to)
@@ -758,6 +764,8 @@ class VideoController:
             self._player.set_media(media)
             self._want_pause = False
             self._held = False
+            self._hold_at = None
+            self._stall_hold = False
             self._length = 0.0
             self._vt_mark = (None, 0.0)
             self._set_rate(1.0, force=True)
@@ -820,8 +828,14 @@ class VideoController:
         except Exception:
             pass
 
-    def sync_to(self, seconds, paused=False):
+    def sync_to(self, seconds, paused=False, running=True):
         """Lock this player to the audio engine's clock.
+
+        `running` is False while the song's position isn't moving (the audio is
+        buffering, or a song went quiet at its end and the watchdog hasn't ended
+        it yet). The picture waits on its frame until it moves again: playing on
+        against a frozen clock and being pulled back every few seconds replayed
+        the same stretch of video over and over — right before songs ended.
 
         Three tiers:
 
@@ -864,11 +878,34 @@ class VideoController:
 
             st = self._player.get_state()
 
+            # ── The audio is stuck: wait on this frame ──
+            if not running:
+                if not self._held and st in (vlc.State.Playing, vlc.State.Buffering):
+                    self._player.set_pause(1)
+                self._stall_hold = True
+                self._set_rate(1.0)
+                self._ready = False
+                return
+            if self._stall_hold:
+                self._stall_hold = False
+                if not self._held:
+                    if not self._want_pause and st == vlc.State.Paused:
+                        self._player.set_pause(0)
+                    # Snap to the audio once playing again (it may have moved
+                    # on, or the picture may have run a little ahead first).
+                    self._resync = True
+                    self._audio_mark = None
+                    self._pos_mark = None
+                self._ready = False
+                return
+
             # ── End of the video (see END_FREEZE) ──
             length = self._video_length()
             if self._held or st == vlc.State.Ended:
-                if length > 0 and seconds < length - self.END_SLACK:
-                    self._back_inside(seconds, now)     # song was seeked back
+                self._hold_at = seconds if self._hold_at is None else max(self._hold_at, seconds)
+                if (length > 0 and seconds < length - self.END_SLACK
+                        and seconds < self._hold_at - SYNC_JUMP):
+                    self._back_inside(seconds, now)     # the song was rewound
                 return                                  # hold the last frame
             if length > 0 and st == vlc.State.Playing:
                 # libvlc's get_time() only moves every few hundred ms, so
@@ -883,6 +920,7 @@ class VideoController:
                     # Freeze on this frame instead of letting VLC reach Ended
                     # (which blanks the window) — and never rewind to 0.
                     self._held = True
+                    self._hold_at = seconds
                     self._set_rate(1.0)
                     self._player.set_pause(1)
                     return
@@ -962,6 +1000,7 @@ class VideoController:
     def _back_inside(self, seconds, now):
         """The audio clock moved back inside a video that had finished: play
         on from the audio's position."""
+        self._hold_at = None
         try:
             if self._held:
                 self._held = False
@@ -982,6 +1021,8 @@ class VideoController:
         self._url = None
         self._key = None
         self._held = False
+        self._hold_at = None
+        self._stall_hold = False
         self._length = 0.0
         self._want_pause = False
         self._resync = False
@@ -1896,7 +1937,8 @@ class PlayerWindow(QMainWindow):
             return
         try:
             self.video.sync_to(self.engine.elapsed_seconds,
-                               state == PlayerState.PAUSED)
+                               state == PlayerState.PAUSED,
+                               running=self.engine.clock_running)
         except Exception:
             pass
 
@@ -2621,6 +2663,9 @@ class PlayerWindow(QMainWindow):
             "videoId": t.video_id or None, "album": t.album or None,
             "imageSrc": t.artwork_url or None,
             "isPaused": st == PlayerState.PAUSED,
+            # False while the audio is stuck (buffering, or a song that went
+            # quiet waiting for the watchdog): the widget holds its picture.
+            "clockRunning": self.engine.clock_running,
             "elapsed": self.engine.elapsed_seconds,
             "elapsedSeconds": self.engine.elapsed_seconds,
             "elapsedAt": time.time(),
