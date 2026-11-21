@@ -24,8 +24,11 @@ DEFAULTS = {
         "chatroom_id": 0,
         "broadcaster_user_id": 0,
         "channel_id": 0,
-        # Advanced: read chat through a self-hosted webhook relay instead of
-        # Kick's live chat feed (see extras/install_kick_relay.sh).
+        # Which of Kick's chat servers to read: "auto" follows Kick's choice
+        # and switches by itself if one fails; "centrifugo"/"pusher" pin one.
+        "feed": "auto",
+        # Advanced: read chat through a webhook relay on YOUR OWN server
+        # instead (needs your own Kick app; see extras/install_kick_relay.sh).
         "relay_url": "",
         "relay_verify": True,
     },
@@ -250,9 +253,6 @@ def import_legacy(settings, folder):
     if ch and not ch.startswith("YOUR") and not settings.get("twitch", "channel"):
         settings.set("twitch", "channel", ch.lower(), notify=False)
         notes.append("Twitch channel")
-    ka = load("kick_app.json") or {}
-    if ka.get("relay_url") and ka.get("relay_key") and not settings.get("kick", "relay_url"):
-        settings.set("kick", "relay_url", ka["relay_url"].strip(), notify=False)
-        settings.set_secret("kick_relay", {"relay_key": ka["relay_key"].strip()}, notify=False)
-        notes.append("Kick relay")
+    # An old Kick webhook relay is deliberately not brought over: chat is read
+    # straight from Kick now, so nothing depends on a server.
     return notes

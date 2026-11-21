@@ -75,7 +75,9 @@ Sign in with the bot account and type your own channel name in the Channel box.)
 Twitch asks apps to renew this login about every two months — the app reminds you.
 
 **Kick** — type your channel name (the part after `kick.com/`). Song requests from Kick
-chat work right away. To let the bot *answer* in Kick chat, click **Sign in to Kick**.
+chat work right away: the app reads Kick chat straight from Kick, with no login and no
+server, and if Kick's newer chat system ever acts up it switches to the older one by
+itself. To let the bot *answer* in Kick chat, click **Sign in to Kick**.
 If this version of the app doesn't include a Kick app, the Setup window shows three
 short steps to make your own free one on Kick (Kick requires that for bots, and asks you
 to have two-factor login turned on first).
@@ -127,6 +129,11 @@ After that it keeps them up to date by itself.
 pick the browser you're signed in to YouTube with under *Age-restricted videos*
 (Firefox works best; close Chrome/Edge first if you pick those).
 
+**Kick requests don't show up.** Check the channel name in Setup (just the name, like
+`yourname`). The log says which Kick chat system it's on (`reading #yourname chat
+(Centrifugo)` or `(Pusher)`). To test one on purpose, set `"feed": "centrifugo"` or
+`"feed": "pusher"` under `"kick"` in `settings.json` (`"auto"` is the default).
+
 **The Kick bot reads requests but doesn't answer.** Click **Sign in to Kick** in Setup.
 If Kick shows *"invalid authorization request"*, your Kick app's Redirect URL must be
 exactly `http://localhost:3000` and it needs the *read user information* and *write to
@@ -165,7 +172,7 @@ How it's put together:
 | `src/audio_engine.py` | VLC playback, yt-dlp lookups, music-video detection |
 | `src/status_server.py` | `localhost:9111`: OBS widget, `/status`, `/api/*`, video spool |
 | `src/widget.html` | the OBS now-playing card + music video |
-| `src/chat/` | Twitch (EventSub), Kick (live feed + OAuth), Owncast (polling) and the shared commands |
+| `src/chat/` | Twitch (EventSub), Kick (Centrifugo or Pusher live chat + OAuth), Owncast (polling) and the shared commands |
 | `src/setup_dialog.py` | the Setup window and its Connect buttons |
 | `src/tools.py` | downloads and updates yt-dlp and Deno |
 | `packaging/` | PyInstaller recipe, VLC download, Windows installer, .dmg and .deb scripts |
@@ -187,7 +194,10 @@ in public source code. To give everyone one-click Kick sign-in, add your Kick ap
 (Settings → Secrets and variables → Actions); release builds then include it. Its
 Redirect URL must be `http://localhost:3000`. Keep in mind that anything shipped inside an
 app can be dug out of it by a determined person — use a Kick app made just for this.
-Without it, each streamer makes their own free Kick app in the Setup window.
+Without it, each streamer makes their own free Kick app in the Setup window. The built-in
+app is only used to sign in and send chat replies; it's never used to subscribe to Kick's
+webhooks (only a streamer's own app can, for the optional relay), so nothing reaches the
+webhook address set on your app.
 
 ## Credits and license
 

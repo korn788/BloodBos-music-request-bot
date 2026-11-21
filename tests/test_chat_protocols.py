@@ -243,7 +243,7 @@ async def _kick_case():
 
     s = _settings()
     s.update("kick", {"channel": "somechannel", "chatroom_id": 555,
-                      "broadcaster_user_id": 777, "channel_id": 0})
+                      "broadcaster_user_id": 777, "channel_id": 0, "feed": "pusher"})
     s.set_secret("kick", {"access_token": "kicktoken", "refresh_token": "r",
                           "expires_at": 9999999999})
     router = FakeRouter()
@@ -282,6 +282,191 @@ def test_kick_helpers():
     assert creds == ("34bf7a0ff419a2a775b9", "us2")
     assert kick.pusher_credentials_from({"data": {"connections": [
         {"provider": "centrifugo", "credentials": {}}]}}) is None
+
+
+# Kick's Centrifugo chat server, with frames exactly as Kick sends them
+# (two publications to a frame, "{}" pings, token refresh).
+
+def _kick_chat(mid, content, user="kviewer", badges=()):
+    return {"id": mid, "chatroom_id": 555, "content": content, "type": "message",
+            "sender": {"id": 9, "username": user, "slug": user,
+                       "identity": {"color": "#fff", "badges": [{"type": b} for b in badges]}}}
+
+
+def _cf_push(data):
+    return json.dumps({"push": {"channel": "chatrooms.555.v2", "pub": {"data": {
+        "event": "App\\Events\\ChatMessageEvent", "data": json.dumps(data)}}}})
+
+
+async def _kick_two_servers_case(centrifugo_works=True, relay=False):
+    from chat import kick
+    state = {"offered": [], "tokens": 0, "token_clients": [], "cf_conns": 0, "cf_connect": [],
+             "cf_sub": None, "cf_pong": False, "cf_refresh": [], "pusher_keys": [],
+             "pusher_pong": False, "sent": [], "relay_hits": 0, "oauth_hits": 0}
+
+    async def realtime(req):
+        body = await req.json()
+        offered = [x["provider"] for x in body["capabilities"]["accepted_providers"]]
+        state["offered"].append(offered)
+        if "centrifugo" in offered:          # what Kick answers when Centrifugo is accepted
+            return web.json_response({"data": {"connections": [{"provider": "centrifugo",
+                "credentials": {"url": f"ws://127.0.0.1:{state['port']}/connection/websocket"}}]}})
+        return web.json_response({"data": {"connections": [{"provider": "pusher",
+            "credentials": {"app_key": "testkey", "cluster": "us2"}}]}})
+
+    async def token(req):
+        state["token_clients"].append((await req.json()).get("client_id"))
+        state["tokens"] += 1
+        return web.json_response({"data": {"token": f"tok-{state['tokens']}"}})
+
+    async def centrifugo(req):
+        ws = web.WebSocketResponse()
+        await ws.prepare(req)
+        state["cf_conns"] += 1
+        connect = json.loads((await ws.receive(timeout=5)).data)
+        state["cf_connect"].append(connect)
+        if not centrifugo_works:
+            await ws.send_str(json.dumps({"id": connect["id"],
+                                          "error": {"code": 109, "message": "token expired"}}))
+            await ws.close()
+            return ws
+        await ws.send_str(json.dumps({"id": connect["id"], "connect": {
+            "client": "c", "version": "6.9.7 PRO", "expires": True, "ttl": 2, "ping": 25, "pong": True}}))
+        sub = json.loads((await ws.receive(timeout=5)).data)
+        state["cf_sub"] = sub
+        await ws.send_str(json.dumps({"id": sub["id"], "subscribe": {}}))
+        await ws.send_str(_cf_push(_kick_chat("c1", "!sr kick song")) + "\n"
+                          + _cf_push(_kick_chat("c1", "!sr kick song")))           # dup, same frame
+        await ws.send_str(_cf_push(_kick_chat("c2", "hello")))                      # not a command
+        await ws.send_str(_cf_push(_kick_chat("c3", "!skip", "kmod", ["moderator"])))
+        await ws.send_str("{}")                                                      # server ping
+        end = asyncio.get_running_loop().time() + 10
+        while not (state["cf_pong"] and state["cf_refresh"]):
+            left = end - asyncio.get_running_loop().time()
+            if left <= 0:
+                break
+            try:
+                m = await ws.receive(timeout=left)
+            except asyncio.TimeoutError:
+                break
+            if m.type != aiohttp.WSMsgType.TEXT:
+                break
+            if m.data == "{}":
+                state["cf_pong"] = True
+                continue
+            cmd = json.loads(m.data)
+            if "refresh" in cmd:
+                state["cf_refresh"].append(cmd["refresh"]["token"])
+                await ws.send_str(json.dumps({"id": cmd["id"], "refresh": {
+                    "client": "c", "expires": True, "ttl": 2}}))
+        await asyncio.sleep(2)
+        return ws
+
+    async def pusher(req):
+        state["pusher_keys"].append(req.match_info["key"])
+        ws = web.WebSocketResponse()
+        await ws.prepare(req)
+        await ws.send_json({"event": "pusher:connection_established",
+                            "data": json.dumps({"socket_id": "1.2", "activity_timeout": 120})})
+        await ws.receive_json(timeout=5)
+        await ws.send_json({"event": "pusher_internal:subscription_succeeded",
+                            "channel": "chatrooms.555.v2", "data": "{}"})
+        for mid, text, user, badges in (("p1", "!sr kick song", "kviewer", ()),
+                                        ("p3", "!skip", "kmod", ("moderator",))):
+            await ws.send_json({"event": "App\\Events\\ChatMessageEvent", "channel": "chatrooms.555.v2",
+                                "data": json.dumps(_kick_chat(mid, text, user, badges))})
+        await asyncio.sleep(5)
+        return ws
+
+    async def send(req):
+        state["sent"].append(await req.json())
+        return web.json_response({"data": {"is_sent": True}})
+
+    async def relay_events(req):
+        state["relay_hits"] += 1
+        return web.Response(status=500)
+
+    async def oauth(req):
+        state["oauth_hits"] += 1
+        return web.json_response({"access_token": "apptoken", "expires_in": 3600})
+
+    app = web.Application()
+    app.router.add_post("/realtime", realtime)
+    app.router.add_post("/token", token)
+    app.router.add_get("/connection/websocket", centrifugo)
+    app.router.add_get("/app/{key}", pusher)
+    app.router.add_post("/public/v1/chat", send)
+    app.router.add_get("/relay/events", relay_events)
+    app.router.add_post("/oauth/token", oauth)
+    runner, port = await _serve(app)
+    state["port"] = port
+    kick.REALTIME_URL = f"http://127.0.0.1:{port}/realtime"
+    kick.REALTIME_TOKEN_URL = f"http://127.0.0.1:{port}/token"
+    kick.API_BASE = f"http://127.0.0.1:{port}/public/v1"
+    kick.OAUTH_BASE = f"http://127.0.0.1:{port}"
+    kick.REFRESH_MIN = 0.2
+    kick.pusher_url = lambda key, cluster: f"ws://127.0.0.1:{port}/app/{key}"
+
+    s = _settings()
+    s.update("kick", {"channel": "somechannel", "chatroom_id": 555,
+                      "broadcaster_user_id": 777, "channel_id": 0})
+    s.set_secret("kick", {"access_token": "kicktoken", "refresh_token": "r",
+                          "expires_at": 9999999999})
+    if relay:      # relay settings but no own Kick app: must not use the relay
+        s.set("kick", "relay_url", f"http://127.0.0.1:{port}/relay")
+        s.set_secret("kick_relay", {"relay_key": "k"})
+    router = FakeRouter()
+    ctx = Ctx(s, router)
+    task = asyncio.create_task(kick.KickBot(ctx).run())
+    for _ in range(200):
+        done = len(router.seen) >= 2 and len(state["sent"]) >= 2
+        if centrifugo_works:
+            done = done and state["cf_pong"] and state["cf_refresh"]
+        if done:
+            break
+        await asyncio.sleep(0.1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await runner.cleanup()
+    return router, state, ctx
+
+
+def test_kick_centrifugo():
+    router, state, ctx = asyncio.run(_kick_two_servers_case(relay=True))
+    assert state["offered"][0] == ["centrifugo", "pusher"], state["offered"]   # like kick.com
+    assert state["cf_connect"][0]["connect"] == {"token": "tok-1", "name": "js"}
+    assert state["cf_sub"]["subscribe"] == {"channel": "chatrooms.555.v2"}
+    assert [r[2] for r in router.seen] == ["!sr kick song", "!skip"], router.seen
+    assert router.seen[1][3] is True and router.seen[0][3] is False             # mod badge
+    assert state["cf_pong"], "server ping not answered"
+    assert state["cf_refresh"] == ["tok-2"], state["cf_refresh"]                 # renewed in time
+    assert state["token_clients"][0] == state["token_clients"][1]                # same guest id
+    assert state["pusher_keys"] == []
+    assert state["sent"][0]["content"] == "@kviewer ok:!sr kick song"
+    assert any(lvl == "ok" and "Reading #somechannel" in txt for lvl, txt in ctx.statuses)
+    assert state["relay_hits"] == 0 and state["oauth_hits"] == 0                 # never the relay
+
+
+def test_kick_falls_back_to_pusher():
+    router, state, ctx = asyncio.run(_kick_two_servers_case(centrifugo_works=False))
+    assert state["cf_conns"] == 2, state["cf_conns"]                 # two tries, then switch
+    assert state["offered"][:3] == [["centrifugo", "pusher"], ["centrifugo"], ["pusher"]], state["offered"]
+    assert state["pusher_keys"][:1] == ["testkey"], state["pusher_keys"]
+    assert [r[2] for r in router.seen] == ["!sr kick song", "!skip"], router.seen
+    assert any(lvl == "ok" and "Reading #somechannel" in txt for lvl, txt in ctx.statuses)
+
+
+def test_kick_realtime_parsing():
+    from chat import kick
+    both = {"data": {"connections": [
+        {"provider": "centrifugo", "credentials": {"url": "wss://realtime.us-east-1.platform.kick.com/connection/websocket"}},
+        {"provider": "pusher", "credentials": {"app_key": "34bf7a0ff419a2a775b9", "cluster": "us2"}}]}}
+    assert kick.realtime_from(both) == ("centrifugo", "wss://realtime.us-east-1.platform.kick.com/connection/websocket")
+    assert kick.realtime_from(both, ("pusher",)) == ("pusher", ("34bf7a0ff419a2a775b9", "us2"))
+    assert kick.realtime_from({"data": {"connections": [
+        {"provider": "centrifugo", "credentials": {"url": "http://evil.example/x"}}]}}) is None
+    assert kick.realtime_from({"data": {"connections": [
+        {"provider": "pusher", "credentials": {"app_key": "bad key!", "cluster": "us2"}}]}}) is None
 
 
 def test_owncast_helpers():

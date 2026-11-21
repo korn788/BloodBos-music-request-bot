@@ -16,7 +16,7 @@ Then follow the **Setup** window that opens by itself: click **Connect Twitch**,
 
 - **One app for Twitch, Kick and Owncast** — the separate Twitch bot and the .NET Owncast bot are now built in. Sign in with buttons instead of editing files.
 - **Fixed: the music video looping right before a song ends.** When the song's audio ran a little longer than its video, both the OBS widget and the app's video window restarted the video from the beginning. The video now holds its last frame.
-- **Kick chat works again without a server**: the app follows Kick's live-chat key change from October 2026 by itself.
+- **Kick chat works again, with no server and no login**: the app reads Kick's chat on your own computer, using the chat system kick.com itself switched to in October 2026, and falls back to the older one by itself if needed.
 - **Installers** for Windows, macOS (Apple chip and Intel) and Linux, with VLC included on Windows and Mac.
 - **YouTube keeps working**: the app downloads yt-dlp (and the JavaScript runtime YouTube now needs) and updates it daily.
 - **Safer by default**: `!skip`, `!pause`, `!volume` and `!clear` are for you and your mods unless you open them up in Setup; other websites can't control the player through its local API.

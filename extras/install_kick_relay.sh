@@ -4,9 +4,10 @@
 #   sudo bash install_kick_relay.sh your.domain
 #
 # OPTIONAL — most people never need this. BLOODBOS RADIO reads Kick chat
-# straight from Kick's live chat feed. This relay is for anyone who would
+# straight from Kick's own chat servers. This relay is for anyone who would
 # rather receive chat through Kick's official webhooks, which need a public
-# HTTPS address — so it runs on a server you own, behind nginx:
+# HTTPS address — so it runs on a server you own, behind nginx, and needs
+# your own Kick app (Kick sends webhooks to the address set on the app):
 #
 #   https://<domain>/kick-relay/webhook   ← Kick posts chat here
 #   https://<domain>/kick-relay/events    → the player listens here (needs the key)
@@ -684,8 +685,9 @@ cat <<EOF
     (Windows: "%LOCALAPPDATA%\Programs\BLOODBOS Radio\BLOODBOS Radio.exe" --kick-relay ...
      macOS:   "/Applications/BLOODBOS Radio.app/Contents/MacOS/BLOODBOS Radio" --kick-relay ...)
 
-    The app also needs a Kick app (Setup > Kick > "Use my own Kick app")
-    so it can ask Kick to send your chat to the webhook.
+    The app also needs that same Kick app of yours (Setup > Kick > "Use my
+    own Kick app") so it can ask Kick to send your chat to the webhook. The
+    Kick app built into releases is never used for this.
 
  Status page:  $PUB/health
  Live log:     journalctl -u $SVC -f

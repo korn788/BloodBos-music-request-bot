@@ -1,9 +1,16 @@
 # kick.py — Kick chat: reading chat, sign-in, replying
 #
-# Reading chat needs NO sign-in. The bot reads Kick's live chat feed the same
-# way kick.com's own chat box does: it asks Kick for the current feed key
-# (Kick changed it in October 2026 and may again), then listens to your
-# channel's chat room. Just type your channel name in Setup.
+# Reading chat needs NO sign-in and no server of your own. The bot reads
+# Kick's live chat straight from Kick, on this computer, the way kick.com's
+# own chat box does: it asks Kick which chat server to use, then joins your
+# channel's chat room. Kick has two:
+#   Centrifugo  what kick.com itself uses since October 2026 (guest token,
+#               no login)
+#   Pusher      the older one; Kick still hands out its key to clients that
+#               only accept Pusher, and changed that key in October 2026
+# The bot follows Kick's choice, and if that server keeps failing it switches
+# to the other one by itself. settings.json "kick": {"feed": "pusher"} or
+# "centrifugo" pins one (for testing); "auto" is the default.
 #
 # Replying needs a sign-in ("Sign in to Kick"). Kick's sign-in always needs a
 # Kick developer app with a client secret. Release builds can ship one; if this
@@ -11,8 +18,9 @@
 # (two minutes, once).
 #
 # Advanced: instead of the live feed, chat can come from Kick's official
-# webhooks through a small relay on your own server (extras/install_kick_relay.sh).
-# Set relay_url in settings.json and the relay key in Setup to use it.
+# webhooks through a relay on YOUR OWN server (extras/install_kick_relay.sh).
+# That needs your own Kick app too, because Kick sends webhooks to the address
+# set on the app: the app built into releases is never used for it.
 
 import asyncio
 import base64
@@ -36,9 +44,17 @@ API_BASE = "https://api.kick.com/public/v1"
 OAUTH_BASE = "https://id.kick.com"
 PUBLIC_KEY_URL = f"{API_BASE}/public-key"
 REALTIME_URL = "https://web.kick.com/api/v1/realtime/connection"
-# Kick's live-chat feed key as of November 2026, used only if Kick can't be
-# asked for the current one.
+REALTIME_CHANNEL_URL = "https://web.kick.com/api/v1/realtime/channels/{}/chat/connection"
+REALTIME_TOKEN_URL = "https://web.kick.com/api/v1/realtime/auth/connection"
+# Kick's two live-chat servers. kick.com asks Kick which to use and is told
+# Centrifugo; Pusher is still handed to clients that only accept Pusher.
+FEEDS = ("centrifugo", "pusher")
+# Kick's Pusher key as of November 2026, used only if Kick can't be asked.
 FALLBACK_PUSHER = ("34bf7a0ff419a2a775b9", "us2")
+CHAT_EVENTS = {"App\\Events\\ChatMessageEvent", "App\\Events\\ChatMessageSentEvent"}
+SUBSCRIBE_WAIT = 20      # seconds to get into the chat room before retrying
+SWITCH_AFTER = 2         # failed tries in a row before trying the other server
+REFRESH_MIN = 30         # never renew the Centrifugo token more often than this
 # Only what the bot needs: who signed in (user:read) and posting (chat:write).
 # Asking for a scope the Kick app doesn't have ticked makes Kick refuse the
 # sign-in with "invalid authorization request".
@@ -206,38 +222,88 @@ async def lookup_channel(slug):
     return None
 
 
-def pusher_credentials_from(data):
+def _int(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _ws_url_ok(url):
+    try:
+        p = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if p.scheme == "wss" and p.hostname:
+        return True
+    return p.scheme == "ws" and p.hostname in ("127.0.0.1", "localhost")    # tests only
+
+
+def realtime_from(data, offered=FEEDS):
+    """Kick's answer to “which chat server?” → ("centrifugo", url),
+    ("pusher", (key, cluster)) or None. Only providers we offered count."""
     inner = (data or {}).get("data") if isinstance((data or {}).get("data"), dict) else data
     conns = (inner or {}).get("connections") if isinstance(inner, dict) else None
     for c in conns or []:
         if not isinstance(c, dict):
             continue
-        if str(c.get("provider") or "pusher").lower() != "pusher":
-            continue
+        provider = str(c.get("provider") or "pusher").lower()
         cr = c.get("credentials") or {}
-        key = str(cr.get("app_key") or cr.get("key") or "").strip()
-        cluster = str(cr.get("cluster") or "us2").strip()
-        if key.isalnum() and cluster.replace("-", "").isalnum():
-            return key, cluster
+        if provider not in offered or not isinstance(cr, dict):
+            continue
+        if provider == "pusher":
+            key = str(cr.get("app_key") or cr.get("key") or "").strip()
+            cluster = str(cr.get("cluster") or "us2").strip()
+            if key.isalnum() and cluster.replace("-", "").isalnum():
+                return "pusher", (key, cluster)
+        elif provider == "centrifugo":
+            url = str(cr.get("url") or "").strip()
+            if _ws_url_ok(url):
+                return "centrifugo", url
     return None
 
 
-async def fetch_pusher_credentials(channel_id=0):
-    """Ask Kick (like kick.com does) for the current feed key, Pusher only."""
+def pusher_credentials_from(data):
+    found = realtime_from(data, ("pusher",))
+    return found[1] if found else None
+
+
+async def fetch_realtime(channel_id=0, offered=FEEDS):
+    """Ask Kick which live-chat server to use, the way kick.com does. Offered
+    both, Kick picks Centrifugo; offered only Pusher, it hands out the key."""
     body = {"client": {"id": str(uuid.uuid4()), "type": "web"},
-            "capabilities": {"accepted_providers": [{"provider": "pusher"}]}}
+            "capabilities": {"accepted_providers": [{"provider": p} for p in offered]}}
     hdrs = dict(KICK_HEADERS, **{"Content-Type": "application/json"})
     urls = [REALTIME_URL]
     if channel_id:
-        urls.insert(0, f"https://web.kick.com/api/v1/realtime/channels/{int(channel_id)}/chat/connection")
+        urls.insert(0, REALTIME_CHANNEL_URL.format(int(channel_id)))
     for url in urls:
         status, text = await http_util.request("POST", url, headers=hdrs, json_body=body,
                                                impersonate=True, timeout=15)
         if status == 200:
-            found = pusher_credentials_from(http_util.loads(text))
+            found = realtime_from(http_util.loads(text), offered)
             if found:
                 return found
     return None
+
+
+async def fetch_pusher_credentials(channel_id=0):
+    found = await fetch_realtime(channel_id, ("pusher",))
+    return found[1] if found else None
+
+
+async def fetch_centrifugo_token(client_id):
+    """A guest token for Kick's Centrifugo chat server: no login, lasts ~45 min."""
+    hdrs = dict(KICK_HEADERS, **{"Content-Type": "application/json"})
+    status, text = await http_util.request("POST", REALTIME_TOKEN_URL, headers=hdrs,
+                                           json_body={"client_id": client_id},
+                                           impersonate=True, timeout=15)
+    d = http_util.loads(text) if status == 200 else None
+    if not isinstance(d, dict):
+        return None
+    inner = d.get("data") if isinstance(d.get("data"), dict) else d
+    tok = inner.get("token")
+    return str(tok) if tok else None
 
 
 def pusher_url(key, cluster):
@@ -359,6 +425,9 @@ class KickBot:
         self._seen = set()
         self._seen_order = deque()
         self._pusher = None              # (key, cluster) last known good
+        self._centrifugo = None          # Centrifugo address Kick handed out
+        self._live = False               # in the chat room this connection
+        self._cf_ttl = 0                 # Centrifugo token lifetime (seconds)
         self._signed_in_note = ""
         # relay mode
         self._app_tok = None
@@ -404,10 +473,20 @@ class KickBot:
                     return None
             return tok["access_token"]
 
+    def _own_app(self):
+        """The streamer's own Kick app, never the one built into releases."""
+        own = self.settings.secret("kick_app")
+        if own.get("client_id") and own.get("client_secret"):
+            return own["client_id"].strip(), own["client_secret"].strip(), app_keys.KICK_REDIRECT_URI
+        return None
+
     async def _app_token(self):
+        # Only relay mode uses an app token (to subscribe to chat webhooks), and
+        # Kick delivers those to the webhook address set on the app — so only
+        # the streamer's own app may do it.
         if self._app_tok and self._app_tok_exp - time.time() > 300:
             return self._app_tok
-        app = kick_app(self.settings)
+        app = self._own_app()
         if not app:
             return None
         tok = await token_request(app, {"grant_type": "client_credentials"})
@@ -479,46 +558,224 @@ class KickBot:
         self.ctx.status("connecting", f"Finding #{self.channel}…")
         await self._resolve_ids()
         if self._relay_mode():
-            sub = asyncio.create_task(self._keep_subscribed()) if kick_app(self.settings) else None
-            try:
-                await self._relay_forever()
-            finally:
-                if sub:
+            if self._own_app():
+                sub = asyncio.create_task(self._keep_subscribed())
+                try:
+                    await self._relay_forever()
+                finally:
                     sub.cancel()
+                return
+            print("[Kick] relay mode needs your own Kick app (its webhook address points at "
+                  "your relay) — reading Kick's live chat directly instead")
+        await self._feed_forever()
+
+    # ── live chat (Kick's own chat servers, straight from this computer) ──
+
+    def _feed_choice(self):
+        f = str(self.settings.get("kick", "feed") or "auto").strip().lower()
+        return f if f in FEEDS else "auto"
+
+    def _keep_creds(self, found):
+        provider, creds = found
+        if provider == "pusher":
+            self._pusher = creds
         else:
-            await self._pusher_forever()
+            self._centrifugo = creds
 
-    # ── live chat feed (Pusher) ──
+    async def _pusher_creds(self, fresh):
+        if fresh or not self._pusher:
+            found = await fetch_pusher_credentials(self.channel_id)
+            if found and found != self._pusher:
+                print(f"[Kick] Pusher key {found[0]} ({found[1]})")
+            self._pusher = found or self._pusher or FALLBACK_PUSHER
 
-    async def _pusher_forever(self):
-        backoff = 1
-        refresh_key = True
+    async def _centrifugo_url(self, fresh):
+        if fresh or not self._centrifugo:
+            found = await fetch_realtime(self.channel_id, ("centrifugo",))
+            if found and found[1] != self._centrifugo:
+                print(f"[Kick] chat server {found[1]}")
+            if found:
+                self._centrifugo = found[1]
+        return self._centrifugo
+
+    async def _feed_forever(self):
+        """Follow Kick's choice of chat server; if it keeps failing, use the
+        other one. A connection that got into the chat room and later dropped
+        just reconnects to the same server."""
+        forced = self._feed_choice()
+        feed = None if forced == "auto" else forced
+        fails, backoff, fresh = 0, 1, True
         while True:
-            if refresh_key or not self._pusher:
-                found = await fetch_pusher_credentials(self.channel_id)
-                if found and found != self._pusher:
-                    print(f"[Kick] chat feed key {found[0]} ({found[1]})")
-                self._pusher = found or self._pusher or FALLBACK_PUSHER
-                refresh_key = False
+            if feed is None:                     # ask Kick, offering both like kick.com
+                found = await fetch_realtime(self.channel_id, FEEDS)
+                feed = found[0] if found else "pusher"   # can't ask Kick: known Pusher key
+                if found:
+                    self._keep_creds(found)
+                    fresh = False
             started = time.monotonic()
+            self._live = False
             try:
                 async with aiohttp.ClientSession(trust_env=True) as session:
-                    await self._pusher_session(session)
+                    if feed == "centrifugo":
+                        url = await self._centrifugo_url(fresh)
+                        if not url:
+                            raise _NoFeed("Kick didn't offer its Centrifugo chat server")
+                        await self._centrifugo_session(session, url)
+                    else:
+                        await self._pusher_creds(fresh)
+                        await self._pusher_session(session)
             except _BadKey:
-                refresh_key = True
                 self._pusher = None
-                print("[Kick] feed key refused — asking Kick for the current one")
+                print("[Kick] Pusher key refused — asking Kick for the current one")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                print(f"[Kick] chat feed dropped: {type(e).__name__}: {e}")
-                self.ctx.status("connecting", f"Reconnecting to #{self.channel} chat…")
-            if time.monotonic() - started > 60:
-                backoff = 1
+                print(f"[Kick] chat connection ({feed}) lost: {type(e).__name__}: {e}")
+            self.ctx.status("connecting", f"Reconnecting to #{self.channel} chat…")
+            if self._live:
+                fails = 0
+                if time.monotonic() - started > 60:
+                    backoff = 1
+            else:
+                fails += 1
+            if fails >= SWITCH_AFTER and forced == "auto":
+                other = "pusher" if feed == "centrifugo" else "centrifugo"
+                print(f"[Kick] {feed} isn't working — switching to {other}")
+                feed, fails, backoff = other, 0, 1
+            fresh = (not self._live) or backoff >= 8
             await asyncio.sleep(backoff)
             backoff = min(30, backoff * 2)
-            if backoff >= 8:
-                refresh_key = True
+
+    def _now_live(self, via):
+        if not self._live:
+            print(f"[Kick] reading #{self.channel} chat ({via})")
+        self._live = True
+        self.ctx.status("ok" if not self._reply_note() else "warn",
+                        f"Reading #{self.channel} chat{self._reply_note()}")
+
+    def _on_feed_event(self, d):
+        """{event, data} from either server; data is usually a JSON string."""
+        if isinstance(d, str):
+            d = http_util.loads(d)
+        if not isinstance(d, dict) or d.get("event") not in CHAT_EVENTS:
+            return
+        data = d.get("data")
+        if isinstance(data, str):
+            data = http_util.loads(data)
+        if isinstance(data, dict):
+            self._on_chat(data)
+
+    # Centrifugo: JSON commands {"id": n, "<command>": {...}}; replies can come
+    # several to a frame, one per line; "{}" is the server's ping.
+
+    async def _centrifugo_session(self, session, url):
+        client_id = str(uuid.uuid4())
+        token = await fetch_centrifugo_token(client_id)
+        if not token:
+            raise _NoFeed("Kick didn't hand out a chat token")
+        ws = await session.ws_connect(url, heartbeat=None, max_msg_size=4 * 1024 * 1024,
+                                      headers={"Origin": "https://kick.com",
+                                               "User-Agent": http_util.BROWSER_UA})
+        counter = iter(range(1, 1 << 30))
+        refresher = None
+
+        async def send(kind, payload):
+            n = next(counter)
+            await ws.send_str(json.dumps({"id": n, kind: payload}))
+            return n
+
+        try:
+            await send("connect", {"token": token, "name": "js"})
+            msg = await ws.receive(timeout=SUBSCRIBE_WAIT)
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                raise ConnectionError(f"chat server closed the connection (code {ws.close_code})")
+            lines = [ln for ln in msg.data.split("\n") if ln.strip()]
+            reply = http_util.loads(lines[0]) if lines else None
+            if isinstance(reply, dict) and isinstance(reply.get("error"), dict):
+                e = reply["error"]
+                raise _NoFeed(f"chat server refused us ({e.get('code')}: {e.get('message')})")
+            conn = reply.get("connect") if isinstance(reply, dict) else None
+            if not isinstance(conn, dict):
+                raise ConnectionError(f"unexpected first reply: {(lines or [''])[0][:120]}")
+            ping = _int(conn.get("ping"))
+            read_wait = ping + 15 if ping > 0 else 150
+            self._cf_ttl = _int(conn.get("ttl")) if conn.get("expires") else 0
+            if self._cf_ttl > 0:
+                refresher = asyncio.create_task(self._centrifugo_refresh(client_id, send))
+            sub_id = await send("subscribe", {"channel": f"chatrooms.{self.chatroom_id}.v2"})
+            deadline = time.monotonic() + SUBSCRIBE_WAIT
+            pending = lines[1:]
+            while True:
+                for line in pending:
+                    await self._centrifugo_line(line, ws, sub_id)
+                wait = read_wait if self._live else deadline - time.monotonic()
+                if wait <= 0:
+                    raise ConnectionError("Kick never let us into the chat room")
+                try:
+                    msg = await ws.receive(timeout=wait)
+                except asyncio.TimeoutError:
+                    raise ConnectionError("chat server went quiet" if self._live
+                                          else "Kick never let us into the chat room")
+                if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED,
+                                aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+                    raise ConnectionError(f"chat server closed the connection (code {ws.close_code})")
+                pending = msg.data.split("\n") if msg.type == aiohttp.WSMsgType.TEXT else []
+        finally:
+            if refresher:
+                refresher.cancel()
+            await ws.close()
+
+    async def _centrifugo_line(self, line, ws, sub_id):
+        line = line.strip()
+        if not line:
+            return
+        if line == "{}":                                  # server ping → pong
+            await ws.send_str("{}")
+            return
+        r = http_util.loads(line)
+        if not isinstance(r, dict):
+            return
+        push = r.get("push")
+        if isinstance(push, dict):
+            if push.get("disconnect") is not None:
+                d = push["disconnect"] if isinstance(push["disconnect"], dict) else {}
+                raise ConnectionError(f"chat server disconnected us "
+                                      f"({d.get('code')}: {d.get('reason') or d.get('message')})")
+            if push.get("unsubscribe") is not None:
+                raise ConnectionError("chat server dropped the chat room")
+            pub = push.get("pub")
+            if isinstance(pub, dict):
+                self._on_feed_event(pub.get("data"))
+            return
+        if r.get("id") == sub_id:
+            err = r.get("error")
+            if isinstance(err, dict) and _int(err.get("code")) != 105:    # 105 = already in
+                raise _NoFeed(f"Kick refused the chat room ({err.get('code')}: {err.get('message')})")
+            self._now_live("Centrifugo")
+            return
+        if isinstance(r.get("refresh"), dict):
+            self._cf_ttl = _int(r["refresh"].get("ttl"), self._cf_ttl) if r["refresh"].get("expires") else 0
+            return
+        if isinstance(r.get("error"), dict):
+            print(f"[Kick] chat server: {r['error'].get('code')} {r['error'].get('message')}")
+
+    async def _centrifugo_refresh(self, client_id, send):
+        """Renew the guest token at three quarters of its life. If that fails
+        the server disconnects at expiry and the reconnect gets a new one."""
+        try:
+            while self._cf_ttl > 0:
+                await asyncio.sleep(max(REFRESH_MIN, self._cf_ttl * 3 / 4))
+                token = await fetch_centrifugo_token(client_id)
+                if not token:
+                    print("[Kick] couldn't renew the chat token — reconnecting when it runs out")
+                    return
+                await send("refresh", {"token": token})
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[Kick] chat token renewal stopped: {type(e).__name__}: {e}")
+
+    # Pusher
 
     async def _pusher_session(self, session):
         key, cluster = self._pusher
@@ -527,24 +784,35 @@ class KickBot:
                                                "User-Agent": http_util.BROWSER_UA})
         try:
             activity = 120
-            first = await ws.receive(timeout=20)
+            first = await ws.receive(timeout=SUBSCRIBE_WAIT)
             env = self._pusher_env(first)
             if env.get("event") == "pusher:error":
                 self._pusher_error(env)
+            if ws.close_code == 4001:
+                raise _BadKey()
             if env.get("event") != "pusher:connection_established":
                 raise ConnectionError(f"unexpected first message: {str(env)[:120]}")
-            try:
-                activity = int((http_util.loads(env.get("data")) or {}).get("activity_timeout") or 120)
-            except (TypeError, ValueError):
-                pass
+            est = env.get("data")
+            est = est if isinstance(est, dict) else http_util.loads(est)
+            activity = _int(est.get("activity_timeout"), 120) if isinstance(est, dict) else 120
+            activity = activity if activity > 0 else 120
             await ws.send_str(json.dumps({"event": "pusher:subscribe",
                                           "data": {"auth": "",
                                                    "channel": f"chatrooms.{self.chatroom_id}.v2"}}))
+            deadline = time.monotonic() + SUBSCRIBE_WAIT
             waiting_pong = False
             while True:
+                if self._live:
+                    wait = 30 if waiting_pong else activity
+                else:
+                    wait = deadline - time.monotonic()
+                    if wait <= 0:
+                        raise ConnectionError("Kick never let us into the chat room")
                 try:
-                    msg = await ws.receive(timeout=(30 if waiting_pong else activity))
+                    msg = await ws.receive(timeout=wait)
                 except asyncio.TimeoutError:
+                    if not self._live:
+                        raise ConnectionError("Kick never let us into the chat room")
                     if waiting_pong:
                         raise ConnectionError("no pong from the chat feed")
                     await ws.send_str(json.dumps({"event": "pusher:ping", "data": {}}))
@@ -565,14 +833,9 @@ class KickBot:
                 elif ev == "pusher:error":
                     self._pusher_error(env)
                 elif ev == "pusher_internal:subscription_succeeded":
-                    self.ctx.status("ok" if not self._reply_note() else "warn",
-                                    f"Reading #{self.channel} chat{self._reply_note()}")
-                elif ev == "App\\Events\\ChatMessageEvent":
-                    data = env.get("data")
-                    if isinstance(data, str):
-                        data = http_util.loads(data)
-                    if isinstance(data, dict):
-                        self._on_chat(data)
+                    self._now_live("Pusher")
+                elif ev in CHAT_EVENTS:
+                    self._on_feed_event(env)
         finally:
             await ws.close()
 
@@ -662,8 +925,8 @@ class KickBot:
     async def _ensure_subscription(self):
         token = await self._app_token()
         if not token:
-            self.ctx.status("error", "Relay mode needs a Kick app (Client ID/Secret) to "
-                                     "subscribe to chat webhooks")
+            self.ctx.status("error", "Relay mode needs your own Kick app (Client ID/Secret) "
+                                     "to subscribe to chat webhooks")
             return False
         bid = int(self.broadcaster_id)
         hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
@@ -828,4 +1091,8 @@ class KickBot:
 
 
 class _BadKey(Exception):
-    """The live-chat feed refused our key (Kick changed it)."""
+    """Pusher refused our key (Kick changed it)."""
+
+
+class _NoFeed(Exception):
+    """Kick wouldn't give us that chat server (no address, token or room)."""
