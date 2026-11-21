@@ -172,19 +172,24 @@ jobs:
         run: |
           sudo apt-get install -y -q ./dist/bloodbos-radio_amd64.deb
           bloodbos-radio --selftest
+      - name: Make the ready-made app download (what install.sh installs)
+        run: tar -C dist -czf dist/BLOODBOS-Radio-Linux-x86_64.tar.gz bloodbos-radio
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: dist/bloodbos-radio_amd64.deb
+          path: |
+            dist/bloodbos-radio_amd64.deb
+            dist/BLOODBOS-Radio-Linux-x86_64.tar.gz
           if-no-files-found: error
 
   linux_installer:
-    needs: tests
+    needs: [tests, linux]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         image: ["ubuntu:24.04", "debian:12", "fedora:latest", "archlinux:latest"]
+        mode: [ready-made, source]
     container: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v5
@@ -192,7 +197,16 @@ jobs:
         run: |
           if command -v pacman >/dev/null; then pacman -Syu --noconfirm; fi
           if command -v apt-get >/dev/null; then apt-get update -q; fi
-      - name: Run install.sh
+      - uses: actions/download-artifact@v4
+        if: matrix.mode == 'ready-made'
+        with: { name: linux, path: artifacts }
+      - name: Run install.sh (ready-made app)
+        if: matrix.mode == 'ready-made'
+        run: |
+          bash install.sh --bundle artifacts/BLOODBOS-Radio-Linux-x86_64.tar.gz --yes --no-launch
+          grep -q "bloodbos-radio-app/app/bloodbos-radio" $HOME/.local/bin/bloodbos-radio
+      - name: Run install.sh (from source)
+        if: matrix.mode == 'source'
         run: bash install.sh --from . --yes --no-launch
       - name: Self-test the installed app
         run: $HOME/.local/bin/bloodbos-radio --selftest
@@ -213,7 +227,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp install.sh artifacts/install.sh
-          files=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name 'install.sh' \) | sort)
+          files=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.tar.gz' -o -name 'install.sh' \) | sort)
           echo "$files"
           title="BLOODBOS Radio ${GITHUB_REF_NAME#v}"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then

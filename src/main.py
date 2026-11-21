@@ -12,6 +12,7 @@ import sys
 import time
 
 import app_paths
+import desktop
 from version import __version__
 
 
@@ -68,6 +69,8 @@ def _setup_logging():
 
 
 def _setup_environment():
+    # Keep the desktop's own environment for opening pages and folders later.
+    desktop.remember_environment()
     # Packaged apps can't count on the system's certificate store being found
     # (macOS especially) — use the bundled certifi list for HTTPS.
     if app_paths.FROZEN and not os.environ.get("SSL_CERT_FILE"):

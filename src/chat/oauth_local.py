@@ -2,9 +2,14 @@
 # "Authorize" on Twitch or Kick.
 #
 # Sign-in pages send the browser back to an address on this computer
-# (http://localhost:<port>/...). For a minute or two while you sign in, the app
-# listens there, picks up the login, and shows a "you can close this tab" page.
-# It only listens on this computer's own loopback address.
+# (http://localhost:<port>/...). While you sign in, the app listens there,
+# picks up the login, and shows a "you can close this tab" page. It only
+# listens on this computer's own loopback address.
+#
+# If that last page can't load (a browser setting, another program on the
+# port, a different browser profile...), the login is still sitting in the
+# browser's address bar: the Setup window lets you paste that address and
+# finishes the sign-in from it (Manual below).
 
 import html
 import http.server
@@ -49,8 +54,10 @@ IMPLICIT_SCRIPT = """<script>
   var d={access_token:h.get('access_token')||'', state:h.get('state')||q.get('state')||'',
          scope:h.get('scope')||'', error:q.get('error')||h.get('error')||'',
          error_description:q.get('error_description')||h.get('error_description')||''};
-  try{history.replaceState(null,'',location.pathname);}catch(e){}
   function show(ok,msg){
+    // the login is in the address; wipe it once the app has it (and only then,
+    // so it can still be pasted into the app if handing it over fails)
+    if(ok){try{history.replaceState(null,'',location.pathname);}catch(e){}}
     document.getElementById('icon').innerHTML=ok?'<span style="color:#46d39a">&#10004;</span>'
                                                :'<span style="color:#ff2e4d">&#10006;</span>';
     document.getElementById('head').textContent=ok?'%(platform)s connected!':'%(platform)s sign-in didn\\'t finish';
@@ -89,17 +96,74 @@ class _Server:
                 pass
 
 
-def _wait(event, timeout, cancel):
+def parse_return_address(text):
+    """The address a sign-in sent the browser back to → its parameters
+    (access_token/state/... after "#", or code/state/... after "?")."""
+    text = (text or "").strip().strip("\"'<> ")
+    if not text:
+        return {}
+    params = {}
+    try:
+        u = urllib.parse.urlsplit(text)
+        parts = (u.fragment, u.query)
+    except ValueError:
+        parts = ()
+    for part in parts:
+        for k, v in urllib.parse.parse_qsl(part):
+            params.setdefault(k, v)
+    if not params:                                   # pasted just "access_token=...&state=..."
+        for k, v in urllib.parse.parse_qsl(text.lstrip("#?")):
+            params.setdefault(k, v)
+    return params if any(params.get(k) for k in ("access_token", "code", "error")) else {}
+
+
+class Manual:
+    """A sign-in finished by pasting the address the browser ended up on."""
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.params = {}
+
+    def offer(self, text):
+        params = parse_return_address(text)
+        if not params:
+            return False
+        self.params = params
+        self.event.set()
+        return True
+
+
+def _wait(event, timeout, cancel, manual=None):
+    """→ "browser", "manual", or None (cancelled / timed out)."""
     end = time.time() + timeout
     while time.time() < end:
         if event.wait(0.25):
-            return True
+            return "browser"
+        if manual is not None and manual.event.is_set():
+            return "manual"
         if cancel is not None and cancel.is_set():
-            return False
-    return False
+            return None
+    return None
 
 
-def wait_for_code(redirect_uri, expected_state, platform, timeout=300, cancel=None):
+def _busy(port):
+    return (f"Port {port} on this computer is being used by another program, so the "
+            f"sign-in can't come back to the app by itself. Close that program and try "
+            f"again — or after signing in, paste the address of the page you end up on.")
+
+
+def _start(port, handler_cls, manual, on_ready):
+    srv = _Server(port, handler_cls)
+    if on_ready is not None and (srv.servers or manual is not None):
+        try:
+            on_ready(bool(srv.servers))         # open the browser only once we listen
+        except Exception:
+            pass
+    return srv
+
+
+def wait_for_code(redirect_uri, expected_state, platform, timeout=300, cancel=None,
+                  manual=None, on_ready=None):
     """Authorization-code flow (Kick). Returns (code, error)."""
     u = urllib.parse.urlparse(redirect_uri)
     port = u.port or 80
@@ -132,21 +196,27 @@ def wait_for_code(redirect_uri, expected_state, platform, timeout=300, cancel=No
             self.wfile.write(body)
             got.set()
 
-    srv = _Server(port, H)
-    if not srv.servers:
-        return None, (f"Port {port} on this computer is being used by another program, "
-                      f"so the sign-in can't come back to the app. Close that program "
-                      f"and try again.")
+    srv = _start(port, H, manual, on_ready)
+    if not srv.servers and manual is None:
+        return None, _busy(port)
     try:
-        if not _wait(got, timeout, cancel):
+        how = _wait(got, timeout, cancel, manual)
+        if how is None:
             return None, "cancelled" if (cancel and cancel.is_set()) else "timed out"
+        if how == "manual":
+            d = manual.params
+            if d.get("code") and d.get("state") == expected_state:
+                return d["code"], None
+            return None, (d.get("error_description") or d.get("error") or
+                          f"That address isn't from this {platform} sign-in. Try again.")
     finally:
         time.sleep(0.3)           # let the browser receive the page
         srv.close()
     return box.get("code"), box.get("error")
 
 
-def wait_for_implicit_token(redirect_uri, expected_state, platform, timeout=300, cancel=None):
+def wait_for_implicit_token(redirect_uri, expected_state, platform, timeout=300, cancel=None,
+                            manual=None, on_ready=None):
     """Implicit flow (Twitch). Returns (token_dict, error)."""
     u = urllib.parse.urlparse(redirect_uri)
     port = u.port or 80
@@ -194,14 +264,19 @@ def wait_for_implicit_token(redirect_uri, expected_state, platform, timeout=300,
             self._send(200, json.dumps({"ok": ok, "message": msg}).encode(), "application/json")
             got.set()
 
-    srv = _Server(port, H)
-    if not srv.servers:
-        return None, (f"Port {port} on this computer is being used by another program, "
-                      f"so the sign-in can't come back to the app. Close that program "
-                      f"and try again.")
+    srv = _start(port, H, manual, on_ready)
+    if not srv.servers and manual is None:
+        return None, _busy(port)
     try:
-        if not _wait(got, timeout, cancel):
+        how = _wait(got, timeout, cancel, manual)
+        if how is None:
             return None, "cancelled" if (cancel and cancel.is_set()) else "timed out"
+        if how == "manual":
+            d = manual.params
+            if d.get("access_token") and d.get("state") == expected_state:
+                return d, None
+            return None, (d.get("error_description") or d.get("error") or
+                          f"That address isn't from this {platform} sign-in. Try again.")
     finally:
         time.sleep(0.3)
         srv.close()

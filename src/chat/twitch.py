@@ -14,16 +14,15 @@
 #   or a separate bot account if you signed in with one).
 
 import asyncio
-import json
 import secrets
 import time
 import urllib.parse
-import webbrowser
 from collections import deque
 
 import aiohttp
 
 import app_keys
+import desktop
 from chat import http_util, oauth_local
 
 SCOPES = ["user:read:chat", "user:write:chat"]
@@ -62,18 +61,27 @@ async def validate(token):
     return None
 
 
-def login_blocking(settings, cancel=None, open_browser=None):
-    """Run the whole sign-in (call from a worker thread). Returns (ok, message)."""
+def login_blocking(settings, cancel=None, open_browser=None, manual=None, on_url=None):
+    """Run the whole sign-in (call from a worker thread). Returns (ok, message).
+    on_url(url) hands the login link to the Setup window (to open it in another
+    browser); manual is an oauth_local.Manual for pasting the address the
+    browser ended up on when that page wouldn't load."""
     if not app_keys.TWITCH_CLIENT_ID:
         return False, "This build has no Twitch app configured."
     state = secrets.token_urlsafe(18)
     url = authorize_url(state)
-    try:
-        (open_browser or webbrowser.open)(url)
-    except Exception:
-        pass
+    if on_url:
+        on_url(url)
+
+    def ready(_listening):
+        try:
+            (open_browser or desktop.open_url)(url)
+        except Exception:
+            pass
+
     tok, err = oauth_local.wait_for_implicit_token(
-        app_keys.TWITCH_REDIRECT_URI, state, "Twitch", timeout=300, cancel=cancel)
+        app_keys.TWITCH_REDIRECT_URI, state, "Twitch", timeout=900, cancel=cancel,
+        manual=manual, on_ready=ready)
     if not tok:
         return False, {"cancelled": "Cancelled.", "timed out": "Timed out waiting for Twitch."}.get(
             err, err or "Twitch sign-in didn't finish.")

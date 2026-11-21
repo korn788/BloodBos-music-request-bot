@@ -54,9 +54,10 @@ Open a terminal, paste this line and press Enter:
 curl -fsSL https://raw.githubusercontent.com/korn788/BloodBos-music-request-bot/main/install.sh | bash
 ```
 
-It installs VLC if you don't have it (asks for your password for that), sets the app up
-in your home folder, and adds it to your app menu. Run the same line again any time to
-update. Works on Ubuntu, Debian, Mint, Pop!_OS, Fedora, Arch, CachyOS, Manjaro,
+It installs VLC if you don't have it (asks for your password for that), puts the app
+in your home folder, and adds it to your app menu. It's the same ready-made app as the
+other downloads (on computers it can't run on, it sets the app up from its source code
+instead). Run the same line again any time to update. Works on Ubuntu, Debian, Mint, Pop!_OS, Fedora, Arch, CachyOS, Manjaro,
 EndeavourOS and openSUSE. To remove it: `bash <(curl -fsSL https://raw.githubusercontent.com/korn788/BloodBos-music-request-bot/main/install.sh) --uninstall`
 
 On Ubuntu, Debian, Mint or Pop!_OS you can instead download the **.deb** above and
@@ -69,15 +70,16 @@ double-click it.
 The **Setup** window opens by itself the first time (later: click the ⚙ button, or any
 of the Twitch / Kick / Owncast pills at the top of the player).
 
-**Twitch** — click **Connect Twitch**. Your browser opens Twitch; click **Authorize**.
-Done. (The bot replies from the account you sign in with. Want a separate bot account?
+**Twitch** — click **Connect Twitch**. Your browser opens Twitch; log in and click
+**Authorize**. Done. (The bot replies from the account you sign in with. Want a separate bot account?
 Sign in with the bot account and type your own channel name in the Channel box.)
 Twitch asks apps to renew this login about every two months — the app reminds you.
 
 **Kick** — type your channel name (the part after `kick.com/`). Song requests from Kick
 chat work right away: the app reads Kick chat straight from Kick, with no login and no
 server, and if Kick's newer chat system ever acts up it switches to the older one by
-itself. To let the bot *answer* in Kick chat, click **Sign in to Kick**.
+itself. To let the bot *answer* in Kick chat, click **Sign in to Kick**, log in on Kick's
+page and click **Allow**.
 If this version of the app doesn't include a Kick app, the Setup window shows three
 short steps to make your own free one on Kick (Kick requires that for bots, and asks you
 to have two-factor login turned on first).
@@ -128,6 +130,11 @@ After that it keeps them up to date by itself.
 **"Sign in to confirm your age" / some videos won't play.** In Setup → *Player & OBS*,
 pick the browser you're signed in to YouTube with under *Age-restricted videos*
 (Firefox works best; close Chrome/Edge first if you pick those).
+
+**The Twitch or Kick page didn't load after I logged in** (or the wrong browser opened).
+Look under the sign-in button in Setup: copy the sign-in link into another browser, or
+paste the address of the page you ended up on into the box there — the login is in that
+address, so the app can finish from it.
 
 **Kick requests don't show up.** Check the channel name in Setup (just the name, like
 `yourname`). The log says which Kick chat system it's on (`reading #yourname chat
@@ -185,8 +192,9 @@ How it's put together:
 all on `http://localhost:9111`. Requests from web pages on other sites are refused.
 
 **Making a release**: bump `src/version.py`, commit, `git tag v1.2.3 && git push origin v1.2.3`.
-GitHub Actions builds and tests the Windows installer, both Mac .dmg files and the Linux
-.deb, tests `install.sh` on Ubuntu, Debian, Fedora and Arch, then publishes the release.
+GitHub Actions builds and tests the Windows installer, both Mac .dmg files, the Linux
+.deb and the ready-made Linux app, tests `install.sh` (both ways) on Ubuntu, Debian,
+Fedora and Arch, then publishes the release.
 
 **Built-in Kick app (optional).** Kick's sign-in needs a client *secret*, which can't live
 in public source code. To give everyone one-click Kick sign-in, add your Kick app's

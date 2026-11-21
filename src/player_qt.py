@@ -2586,8 +2586,8 @@ class PlayerWindow(QMainWindow):
             self.btn_update.clicked.disconnect()
         except Exception:
             pass
-        import webbrowser
-        self.btn_update.clicked.connect(lambda: webbrowser.open(url))
+        import desktop
+        self.btn_update.clicked.connect(lambda: desktop.open_url(url))
         self.btn_update.show()
         self._set_status(f"A new version ({version}) is available \u2014 click UPDATE above "
                          f"the log to download it")

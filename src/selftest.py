@@ -131,6 +131,18 @@ def run():
         import chat.twitch, chat.kick, chat.owncast  # noqa: F401
         ok("chat modules load")
 
+        # Browsers and file managers must start with the desktop's own
+        # libraries, not the copies inside this app.
+        import desktop
+        env = desktop.clean_env()
+        if getattr(sys, "frozen", False):
+            here = app_paths.resource_dir()
+            leaked = [v for v in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "QT_PLUGIN_PATH")
+                      if here in env.get(v, "")]
+            if leaked:
+                raise RuntimeError(f"web pages would open with the app's own libraries ({leaked})")
+        ok("web pages open with the desktop's own settings")
+
         port = settings.get("player", "port")
         server = StatusServer(player_status_fn=window.get_player_status,
                               queue_fn=window.get_queue_status,

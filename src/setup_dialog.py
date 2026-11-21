@@ -1,13 +1,10 @@
 # setup_dialog.py — the Setup window: connect chat, pick a few options, get
 # the OBS link. Opens by itself the first time the app starts.
 
-import os
 import sys
 import threading
-import webbrowser
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QTabWidget,
@@ -16,7 +13,9 @@ from PyQt6.QtWidgets import (
 
 import app_keys
 import app_paths
+import desktop
 from chat import kick as kick_mod
+from chat import oauth_local
 from chat import owncast as owncast_mod
 from chat import twitch as twitch_mod
 
@@ -48,6 +47,7 @@ def _button(text, name="ghostbtn", slot=None):
 
 class SetupDialog(QDialog):
     _job_done = pyqtSignal(str, object)       # (job name, result) from worker threads
+    _login_link = pyqtSignal(str, str)        # (platform, sign-in link) from worker threads
 
     def __init__(self, window, settings, chat):
         super().__init__(window)
@@ -56,11 +56,16 @@ class SetupDialog(QDialog):
         self.chat = chat
         self.theme = getattr(sys.modules.get("player_qt"), "THEME", {})
         self._cancel = {}
+        self._manual = {}                     # platform → oauth_local.Manual while signing in
+        self._links = {}                      # platform → sign-in link
+        self._help = {}                       # platform → (box, address field, note)
+        self._k_app_open = False
         self.setWindowTitle("Setup")
         self.setMinimumWidth(560)
         self.resize(600, 720)
         self.setStyleSheet(self._qss())
         self._job_done.connect(self._on_job_done)
+        self._login_link.connect(self._on_login_link)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 14)
@@ -135,6 +140,7 @@ class SetupDialog(QDialog):
         row.addWidget(self.tw_out)
         row.addWidget(self.tw_btn)
         c.addLayout(row)
+        c.addWidget(self._signin_help("twitch"))
         grid = QGridLayout()
         grid.addWidget(_label("Channel", "field", wrap=False), 0, 0)
         self.tw_channel = QLineEdit(self.settings.get("twitch", "channel") or "")
@@ -168,6 +174,7 @@ class SetupDialog(QDialog):
         row.addWidget(self.k_out)
         row.addWidget(self.k_btn)
         c.addLayout(row)
+        c.addWidget(self._signin_help("kick"))
 
         # Your own Kick app (needed when this build doesn't include one)
         self.k_app_box = QFrame()
@@ -175,14 +182,14 @@ class SetupDialog(QDialog):
         b = QVBoxLayout(self.k_app_box)
         b.setContentsMargins(14, 12, 14, 12)
         b.setSpacing(8)
-        b.addWidget(_label("<b>One-time step.</b> Kick only lets bots reply through a free "
-                           "“developer app” that you make yourself. It takes about two "
-                           "minutes:", "body"))
+        b.addWidget(_label("<b>Advanced — most people don't need this.</b> Use a Kick "
+                           "“developer app” of your own instead of the one built into the app "
+                           "(or if your copy doesn't have one). About two minutes:", "body"))
         r = QHBoxLayout()
         r.addWidget(_label("<b>1.</b> Open Kick's developer settings. (Kick asks you to turn "
                            "on two-factor login first.)", "body"), 1)
         r.addWidget(_button("Open", "ghostsmall",
-                            lambda: webbrowser.open("https://kick.com/settings/developer")))
+                            lambda: desktop.open_url("https://kick.com/settings/developer")))
         b.addLayout(r)
         b.addWidget(_label("<b>2.</b> Click <b>Create App</b> — any name is fine — and set its "
                            "<b>Redirect URL</b> to:", "body"))
@@ -212,8 +219,8 @@ class SetupDialog(QDialog):
         r.addWidget(_button("Save and sign in", "primarybtn", self._kick_save_app))
         b.addLayout(r)
         c.addWidget(self.k_app_box)
-        self.k_app_toggle = _button("Use my own Kick app…", "linkbtn",
-                                    lambda: self.k_app_box.setVisible(not self.k_app_box.isVisible()))
+        self.k_app_toggle = _button("Use my own Kick app (advanced)…", "linkbtn",
+                                    self._kick_toggle_app)
         c.addWidget(self.k_app_toggle, 0, Qt.AlignmentFlag.AlignLeft)
         self.k_note = _label("", "hint")
         c.addWidget(self.k_note)
@@ -263,19 +270,94 @@ class SetupDialog(QDialog):
         v.addStretch(1)
         return page
 
+    # ── sign-in help (when the browser's last page won't load) ──
+
+    def _signin_help(self, platform):
+        box = QFrame()
+        box.setObjectName("subcard")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(12, 10, 12, 10)
+        v.setSpacing(6)
+        v.addWidget(_label("<b>Page didn't load, or the wrong browser opened?</b> Open the "
+                           "sign-in in another browser — or paste the address of the page you "
+                           "ended up on (the login is in that address).", "body"))
+        r = QHBoxLayout()
+        r.addWidget(_button("Copy sign-in link", "ghostsmall", lambda: self._copy_link(platform)))
+        r.addWidget(_button("Open it again", "ghostsmall",
+                            lambda: desktop.open_url(self._links.get(platform, ""))
+                            if self._links.get(platform) else None))
+        r.addStretch(1)
+        v.addLayout(r)
+        r = QHBoxLayout()
+        edit = QLineEdit()
+        edit.setObjectName("entry")
+        edit.setPlaceholderText("Paste the address from your browser's address bar")
+        edit.returnPressed.connect(lambda: self._paste_return(platform))
+        r.addWidget(edit, 1)
+        r.addWidget(_button("Finish sign-in", "ghostsmall", lambda: self._paste_return(platform)))
+        v.addLayout(r)
+        note = _label("", "hint")
+        note.hide()
+        v.addWidget(note)
+        box.hide()
+        self._help[platform] = (box, edit, note)
+        return box
+
+    def _on_login_link(self, platform, url):
+        self._links[platform] = url
+        # Give the browser a moment first; most sign-ins never need this box.
+        QTimer.singleShot(6000, lambda: self._help[platform][0].setVisible(platform in self._cancel))
+
+    def _copy_link(self, platform):
+        url = self._links.get(platform)
+        if url:
+            QApplication.clipboard().setText(url)
+            self._help_note(platform, "Copied — paste it into another browser's address bar.")
+
+    def _paste_return(self, platform):
+        box, edit, note = self._help[platform]
+        man = self._manual.get(platform)
+        if man is None:
+            return
+        if man.offer(edit.text()):
+            self._help_note(platform, "Finishing sign-in…")
+        else:
+            self._help_note(platform, "That's not it — copy the whole address from the address "
+                                      "bar of the page you ended up on (it starts with "
+                                      "http://localhost).")
+
+    def _help_note(self, platform, text):
+        note = self._help[platform][2]
+        note.setText(text)
+        note.setVisible(bool(text))
+
+    def _end_help(self, platform):
+        self._manual.pop(platform, None)
+        box, edit, note = self._help[platform]
+        box.hide()
+        edit.clear()
+        note.setText("")
+        note.hide()
+
     # ── Twitch actions ──
 
     def _twitch_connect(self):
         if "twitch" in self._cancel:
             self._cancel.pop("twitch").set()
+            self._end_help("twitch")
             self._refresh()
             return
         ev = threading.Event()
         self._cancel["twitch"] = ev
+        man = self._manual["twitch"] = oauth_local.Manual()
         self.tw_btn.setText("Cancel")
-        self.tw_account.setText("Waiting for you to click <b>Authorize</b> in your browser…")
-        self.chat.run_thread(lambda: twitch_mod.login_blocking(self.settings, ev),
-                             lambda res: self._job_done.emit("twitch", res))
+        self.tw_account.setText("A Twitch page opened in your browser — log in and click "
+                                "<b>Authorize</b>.")
+        self.chat.run_thread(
+            lambda: twitch_mod.login_blocking(
+                self.settings, ev, manual=man,
+                on_url=lambda url: self._login_link.emit("twitch", url)),
+            lambda res: self._job_done.emit("twitch", res))
 
     def _twitch_signout(self):
         self.settings.set_secret("twitch", None)
@@ -307,25 +389,36 @@ class SetupDialog(QDialog):
                                  replace=True, notify=False)
         self._kick_connect()
 
+    def _kick_toggle_app(self):
+        self._k_app_open = not self._k_app_open
+        self._refresh()
+
     def _kick_connect(self):
         if "kick" in self._cancel:
             self._cancel.pop("kick").set()
+            self._end_help("kick")
             self._refresh()
             return
         if not kick_mod.kick_app(self.settings):
-            self.k_app_box.show()
-            self.k_note.setText("First create your free Kick app (steps above).")
+            self.k_note.setText(kick_mod.NO_KICK_APP)
             return
         self._kick_channel_saved()
         ev = threading.Event()
         self._cancel["kick"] = ev
+        man = self._manual["kick"] = oauth_local.Manual()
         self.k_btn.setText("Cancel")
-        self.k_account.setText("Waiting for you to approve in your browser…")
-        self.k_note.setText("If Kick shows “invalid authorization request”, your Kick app's "
-                            f"Redirect URL must be exactly {app_keys.KICK_REDIRECT_URI} and it "
-                            "needs the read-user-info and write-to-chat permissions.")
-        self.chat.run_thread(lambda: kick_mod.login_blocking(self.settings, ev),
-                             lambda res: self._job_done.emit("kick", res))
+        self.k_account.setText("A Kick page opened in your browser — log in and click "
+                               "<b>Allow</b>.")
+        own = self.settings.secret("kick_app").get("client_id")
+        self.k_note.setText(("If Kick shows “invalid authorization request”, your Kick app's "
+                             f"Redirect URL must be exactly {app_keys.KICK_REDIRECT_URI} and it "
+                             "needs the read-user-info and write-to-chat permissions.")
+                            if own else "")
+        self.chat.run_thread(
+            lambda: kick_mod.login_blocking(
+                self.settings, ev, manual=man,
+                on_url=lambda url: self._login_link.emit("kick", url)),
+            lambda res: self._job_done.emit("kick", res))
 
     def _kick_signout(self):
         self.settings.set_secret("kick", None)
@@ -354,6 +447,8 @@ class SetupDialog(QDialog):
     def _on_job_done(self, job, res):
         if isinstance(res, BaseException):
             res = (False, f"{type(res).__name__}: {res}")
+        if job in ("twitch", "kick"):
+            self._end_help(job)
         if job == "twitch":
             self._cancel.pop("twitch", None)
             ok, msg = res
@@ -412,9 +507,12 @@ class SetupDialog(QDialog):
                 self.k_account.setText("Not signed in — the bot reads chat but can't reply.")
                 self.k_btn.setText("Sign in to Kick")
                 self.k_out.hide()
-        own = self.settings.secret("kick_app").get("client_id")
-        self.k_app_box.setVisible(not has_app and not k.get("access_token"))
-        self.k_app_toggle.setVisible(has_app or bool(own))
+        self.k_app_box.setVisible(self._k_app_open)
+        if not has_app and "kick" not in self._cancel and not k.get("access_token") \
+                and not self.k_note.text():
+            self.k_note.setText(kick_mod.NO_KICK_APP)
+        elif has_app and self.k_note.text() == kick_mod.NO_KICK_APP:
+            self.k_note.setText("")
 
         o = self.settings.secret("owncast")
         url = self.settings.get("owncast", "server_url") or ""
@@ -504,13 +602,11 @@ class SetupDialog(QDialog):
         card, c, _ = self._card("Help")
         row = QHBoxLayout()
         row.addWidget(_button("Open data folder", "ghostsmall",
-                              lambda: QDesktopServices.openUrl(
-                                  QUrl.fromLocalFile(app_paths.data_dir()))))
+                              lambda: desktop.open_path(app_paths.data_dir())))
         row.addWidget(_button("Open log folder", "ghostsmall",
-                              lambda: QDesktopServices.openUrl(
-                                  QUrl.fromLocalFile(app_paths.logs_dir()))))
+                              lambda: desktop.open_path(app_paths.logs_dir())))
         row.addWidget(_button("Project page", "ghostsmall",
-                              lambda: webbrowser.open(f"https://github.com/{app_paths.REPO}")))
+                              lambda: desktop.open_url(f"https://github.com/{app_paths.REPO}")))
         row.addStretch(1)
         c.addLayout(row)
         self.p_updates = QCheckBox("Tell me when a new version is out")

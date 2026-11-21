@@ -32,12 +32,12 @@ import secrets
 import time
 import urllib.parse
 import uuid
-import webbrowser
 from collections import deque
 
 import aiohttp
 
 import app_keys
+import desktop
 from chat import http_util, oauth_local
 
 API_BASE = "https://api.kick.com/public/v1"
@@ -146,11 +146,17 @@ async def _whoami(access):
     return user or {}, chan or {}
 
 
-def login_blocking(settings, cancel=None, open_browser=None):
-    """Sign in to Kick (call from a worker thread). Returns (ok, message)."""
+NO_KICK_APP = ("This copy of the app doesn't include Kick sign-in. The download from the "
+               "Releases page does (you just log in on kick.com) — or set up your own Kick "
+               "app under “Use my own Kick app”.")
+
+
+def login_blocking(settings, cancel=None, open_browser=None, manual=None, on_url=None):
+    """Sign in to Kick (call from a worker thread). Returns (ok, message).
+    on_url / manual: see twitch.login_blocking."""
     app = kick_app(settings)
     if not app:
-        return False, "Add your Kick app's Client ID and Client Secret first."
+        return False, NO_KICK_APP
     cid, _, redirect = app
     verifier = secrets.token_urlsafe(64)[:96]
     challenge = base64.urlsafe_b64encode(
@@ -163,11 +169,17 @@ def login_blocking(settings, cancel=None, open_browser=None):
                ("scope", " ".join(SCOPES)), ("code_challenge", challenge),
                ("code_challenge_method", "S256"), ("state", state)]
     url = f"{OAUTH_BASE}/oauth/authorize?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-    try:
-        (open_browser or webbrowser.open)(url)
-    except Exception:
-        pass
-    code, err = oauth_local.wait_for_code(redirect, state, "Kick", timeout=300, cancel=cancel)
+    if on_url:
+        on_url(url)
+
+    def ready(_listening):
+        try:
+            (open_browser or desktop.open_url)(url)
+        except Exception:
+            pass
+
+    code, err = oauth_local.wait_for_code(redirect, state, "Kick", timeout=900, cancel=cancel,
+                                          manual=manual, on_ready=ready)
     if not code:
         return False, {"cancelled": "Cancelled.", "timed out": "Timed out waiting for Kick."}.get(
             err, err or "Kick sign-in didn't finish.")
