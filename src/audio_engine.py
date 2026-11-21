@@ -93,17 +93,58 @@ def _ytdlp(args: list[str], timeout: float) -> subprocess.CompletedProcess:
             _ytdlp_active -= 1
 
 
-def _ytdlp_base_args() -> list[str]:
-    """Common yt-dlp flags: the managed yt-dlp, its JS runtime, optional cookies."""
+def _ytdlp_base_args(cookies: bool = True) -> list[str]:
+    """Common yt-dlp flags: the managed yt-dlp, its JS runtime, optional cookies.
+
+    cookies=False for SoundCloud. The browser cookies are there for
+    age-restricted YouTube videos; sent to SoundCloud they log yt-dlp in as
+    you, and a logged-in account can get a track back copy-protected that
+    plays fine for a guest.
+    """
     cmd = _tools.ytdlp_cmd() if _tools is not None else ["yt-dlp"]
     args = cmd + ["--no-warnings", "--no-playlist", "--socket-timeout", "10",
                   "--remote-components", "ejs:github"]
     if _tools is not None:
         args += _tools.js_runtime_args()
-    browser = _cookie_browser()
+    browser = _cookie_browser() if cookies else None
     if browser:
         args += ["--cookies-from-browser", browser]
     return args
+
+
+# For the few pages the app opens itself (SoundCloud short links): look like a
+# browser, not a script.
+_BROWSER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+
+# Why yt-dlp turned a link down, read from its ERROR line. These are final
+# answers (trying again gives the same one); anything else, like a network
+# blip, gets one more try.
+_FAILURES = (
+    ("drm", ("drm protected",)),          # SoundCloud: label releases are encrypted
+    ("geo", ("geo restrict", "not available from your location",
+             "not available in your country")),
+    ("gone", ("http error 404", "video unavailable", "has been removed",
+              "this video has been terminated")),
+    ("private", ("http error 401", "private video")),
+    ("bad_link", ("unsupported url", "is not a valid url")),
+)
+
+
+def ytdlp_failure(stderr: str) -> str:
+    """drm | geo | gone | private | bad_link, or "" when it's not clear-cut."""
+    errors = " ".join(line for line in (stderr or "").lower().splitlines()
+                      if "error" in line)
+    for reason, needles in _FAILURES:
+        if any(n in errors for n in needles):
+            return reason
+    return ""
+
+
+def _error_line(stderr: str) -> str:
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if "ERROR" in ln]
+    return (lines[-1] if lines else (stderr or "").strip())[:300]
 
 
 # Values that mean "we don't have real metadata yet."
@@ -716,22 +757,26 @@ class AudioEngine:
                 url = url[:qmark]
                 track.url = url
 
-        # Resolve SC short URLs
+        # Resolve SC short URLs (what the phone app shares): yt-dlp's
+        # SoundCloud support only takes the full soundcloud.com address.
         if "on.soundcloud.com/" in url.lower():
-            try:
-                import urllib.request
-                opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                resp = opener.open(req, timeout=6)
-                resolved = resp.url
+            import urllib.request
+            opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+            for ua in ("Mozilla/5.0", _BROWSER_UA):
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": ua})
+                    resolved = opener.open(req, timeout=8).url
+                except Exception as e:
+                    print(f"[SoundCloud] couldn't open short link {url}: {e}")
+                    continue
                 qmark = resolved.find("?")
                 if qmark > 0:
                     resolved = resolved[:qmark]
-                if "soundcloud.com/" in resolved:
+                if "soundcloud.com/" in resolved and "on.soundcloud.com/" not in resolved:
                     url = resolved
                     track.url = url
-            except Exception:
-                pass
+                    break
+                print(f"[SoundCloud] short link {url} led to {resolved}")
 
         # Check cache
         cache_key = url
@@ -743,6 +788,10 @@ class AudioEngine:
         # Format selection — unchanged from before.
         # SoundCloud uses HLS (m3u8), so include HLS protocol formats first for SC URLs
         is_sc = "soundcloud.com" in url.lower()
+        base = _ytdlp_base_args(cookies=not is_sc)
+        # Why it didn't resolve, for the chat reply (see ytdlp_failure; plus
+        # "preview" for a SoundCloud Go+ track that guests only get 30 s of).
+        track.resolve_error = ""
         fmt = (
             "bestaudio[protocol=m3u8_native]/bestaudio[protocol=m3u8]/"
             "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio*/bestaudio/best"
@@ -758,11 +807,11 @@ class AudioEngine:
                 # data a single run already has. %(urls)s prints the URL of
                 # the format -f selected, so they collapse cleanly.
                 meta_result = _ytdlp(
-                    _ytdlp_base_args() +
+                    base +
                     ["-f", fmt, "--no-download",
                      "--print",
                      "%(title)s|||%(uploader)s|||%(duration)s|||"
-                     "%(thumbnail)s|||%(album)s|||%(urls)s",
+                     "%(thumbnail)s|||%(album)s|||%(format_id)s|||%(urls)s",
                      url],
                     timeout=60
                 )
@@ -771,10 +820,15 @@ class AudioEngine:
                 if meta_result.returncode == 0 and meta_result.stdout.strip():
                     meta_line = meta_result.stdout.strip().split("\n")[0]
                     parts = meta_line.split("|||")
-                    if len(parts) >= 6:
-                        candidate = parts[5].strip().split("\n")[0].strip()
+                    if len(parts) >= 7:
+                        candidate = parts[6].strip().split("\n")[0].strip()
                         if candidate.startswith("http"):
                             stream_url = candidate
+                        if is_sc and "preview" in parts[5].lower():
+                            # SoundCloud Go+ track: apps only get a 30 s clip.
+                            print(f"[yt-dlp] {url}: only a 30-second preview (SoundCloud Go+)")
+                            track.resolve_error = "preview"
+                            return None
                     if len(parts) >= 5:
                         if _is_placeholder(track.title, _PLACEHOLDER_TITLES):
                             new_title = parts[0].strip()
@@ -797,18 +851,26 @@ class AudioEngine:
                         if album and album != "NA":
                             track.album = album
 
+                elif meta_result.returncode != 0:
+                    why = ytdlp_failure(meta_result.stderr)
+                    if why:                     # a final answer: don't ask again
+                        print(f"[yt-dlp] {url}: {why} \u2014 {_error_line(meta_result.stderr)}")
+                        track.resolve_error = why
+                        return None
+
                 # Fallback only: if %(urls)s came back unusable (older yt-dlp,
                 # unusual extractor), resolve the old way rather than failing.
                 if not stream_url:
                     url_result = _ytdlp(
-                        _ytdlp_base_args() +
+                        base +
                         ["-f", fmt, "--get-url", url],
                         timeout=60
                     )
 
                     if url_result.returncode != 0:
                         print(f"[yt-dlp] Failed for {url} (attempt {attempt+1}): {url_result.stderr[:300]}")
-                        if attempt == 0:
+                        track.resolve_error = ytdlp_failure(url_result.stderr)
+                        if attempt == 0 and not track.resolve_error:
                             continue  # retry once before giving up
                         return None
 
@@ -1036,6 +1098,31 @@ class AudioEngine:
         except Exception as e:
             print(f"[Spotify] oEmbed failed: {e}")
         return None
+
+    def soundcloud_song_name(self, url: str) -> Optional[str]:
+        """"Artist - Title" of a SoundCloud track, read even when the track
+        itself won't play here (encrypted, a Go+ preview, blocked in this
+        country) — so the request can be found on YouTube instead."""
+        try:
+            r = _ytdlp(_ytdlp_base_args(cookies=False) +
+                       ["--ignore-no-formats-error", "--print",
+                        "%(artists.0)s|||%(uploader)s|||%(title)s", url],
+                       timeout=45)
+        except Exception as e:
+            print(f"[SoundCloud] couldn't read the track's name: {e}")
+            return None
+        line = (r.stdout or "").strip().split("\n")[0]
+        if r.returncode != 0 or not line:
+            print(f"[SoundCloud] couldn't read the track's name: {_error_line(r.stderr)}")
+            return None
+        artist, uploader, title = [("" if v.strip() == "NA" else v.strip())
+                                   for v in (line.split("|||") + ["", "", ""])[:3]]
+        if not title:
+            return None
+        # A label's upload: the account is the label, and the title usually
+        # already says "Artist - Song".
+        who = artist or ("" if " - " in title else uploader)
+        return f"{who} - {title}" if who and who.lower() not in title.lower() else title
 
     @staticmethod
     def is_soundcloud_url(text: str) -> bool:

@@ -143,6 +143,11 @@ Look under the sign-in button in Setup: copy the sign-in link into another brows
 paste the address of the page you ended up on into the box there — the login is in that
 address, so the app can finish from it.
 
+**A SoundCloud link says SoundCloud locks it.** SoundCloud encrypts many label releases
+so only its own app can play them, and gives other apps just a 30-second preview of
+SoundCloud Go+ tracks. The bot plays the same song from YouTube instead and says so in
+chat; if it can't find it there, ask for it by name with `!sr`.
+
 **Kick requests don't show up.** Check the channel name in Setup (just the name, like
 `yourname`). The log says which Kick chat system it's on (`reading #yourname chat
 (Centrifugo)` or `(Pusher)`). To test one on purpose, set `"feed": "centrifugo"` or

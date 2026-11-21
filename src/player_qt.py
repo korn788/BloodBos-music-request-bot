@@ -1689,20 +1689,74 @@ class PlayerWindow(QMainWindow):
                 return i + 1
         return None
 
+    # Why a link didn't play -> (activity log, chat reply). See ytdlp_failure.
+    _SC_LOCKED = ("drm", "preview", "geo")
+    _LINK_FAILURES = {
+        "drm": ("locked by SoundCloud (encrypted)",
+                "\U0001F512 SoundCloud locks that track so only its own app can "
+                "play it, and I couldn't find it on YouTube. Try the song name."),
+        "preview": ("SoundCloud Go+ track: only a 30-second preview",
+                    "\U0001F512 SoundCloud only gives apps a 30-second preview of "
+                    "that track (Go+), and I couldn't find it on YouTube. Try the "
+                    "song name."),
+        "geo": ("not available in this country",
+                "\u274c That SoundCloud track isn't available in this country, and "
+                "I couldn't find it on YouTube. Try the song name."),
+        "gone": ("private or removed",
+                 "\u274c That {src} link is private or was removed."),
+        "private": ("private",
+                    "\u274c That {src} link is private."),
+        "short_link": ("the short link wouldn't open",
+                       "\u274c Couldn't open that SoundCloud short link. Paste the "
+                       "full soundcloud.com link instead."),
+        "bad_link": ("not a link to a song",
+                     "\u274c That isn't a link to a {src} song. Copy the song's "
+                     "own link and try again."),
+    }
+
+    def _locked_on_soundcloud(self, placeholder, max_s):
+        """SoundCloud won't let this track play outside its own app (encrypted,
+        a Go+ preview, or blocked here). Same song from YouTube, or None."""
+        name = self.engine.soundcloud_song_name(placeholder.url)
+        if not name:
+            return None
+        self.signals.status_msg.emit(
+            f"SoundCloud locks that track \u2014 looking for "
+            f"\u201c{self._short(name, 60)}\u201d on YouTube")
+        found, _ = self.engine.search_youtube_ex(name, max_duration=max_s)
+        return found
+
     def _resolve_request(self, placeholder, text, is_sc, is_yt, on_done=None):
         shown = self._short(text, 60)
         max_s = MAX_SONG_MINUTES * 60
+        note = ""           # put in front of the reply (e.g. "came from YouTube")
         try:
             if is_sc or is_yt:
                 if not self.engine.resolve_stream_url(placeholder):
-                    self._drop_placeholder(placeholder)
                     src = "SoundCloud" if is_sc else "YouTube"
-                    self.signals.status_msg.emit(f"Couldn't resolve that {src} link")
-                    self._report(on_done, False, "unplayable",
-                                 f"\u274c That {src} link won't play (private, "
-                                 f"removed or region-locked). Try another link "
-                                 f"or the song name.")
-                    return
+                    why = getattr(placeholder, "resolve_error", "")
+                    if is_sc and "on.soundcloud.com/" in (placeholder.url or "").lower() \
+                            and why in ("", "bad_link"):
+                        why = "short_link"          # never got past the short link
+                    found = None
+                    if is_sc and why in self._SC_LOCKED:
+                        found = self._locked_on_soundcloud(placeholder, max_s)
+                    if found is None:
+                        self._drop_placeholder(placeholder)
+                        log, msg = self._LINK_FAILURES.get(why, ("", ""))
+                        self.signals.status_msg.emit(
+                            f"Couldn't play that {src} link" + (f" \u2014 {log}" if log else ""))
+                        self._report(on_done, False, "unplayable", (msg or (
+                            "\u274c Couldn't play that {src} link right now. Try "
+                            "again, another link, or the song name.")).format(src=src))
+                        return
+                    for attr in ("title", "artist", "url", "source", "video_id",
+                                 "artwork_url", "duration_seconds", "album",
+                                 "stream_url", "is_music_video"):
+                        if hasattr(found, attr):
+                            setattr(placeholder, attr, getattr(found, attr))
+                    note = ("\U0001F512 SoundCloud locks that track, so it's "
+                            "playing from YouTube. ")
             else:
                 # max_duration lets the search skip a 1-hour upload and take
                 # the next hit instead of rejecting the request as too long.
@@ -1762,7 +1816,7 @@ class PlayerWindow(QMainWindow):
                 if placeholder.duration_seconds else ""
             if pos == 0:
                 self._report(on_done, True, "playing",
-                             f"\u25b6\ufe0f Playing now: {label}{dur}",
+                             f"{note}\u25b6\ufe0f Playing now: {label}{dur}",
                              placeholder, 0)
             elif pos is None:
                 # Cleared/removed from the queue while it was being looked up.
@@ -1771,7 +1825,7 @@ class PlayerWindow(QMainWindow):
                              f"the queue before it could be added.")
             else:
                 self._report(on_done, True, "queued",
-                             f"\u2705 Added: {label}{dur} \u2014 #{pos} in queue",
+                             f"{note}\u2705 Added: {label}{dur} \u2014 #{pos} in queue",
                              placeholder, pos)
         except Exception as e:
             self._drop_placeholder(placeholder)
