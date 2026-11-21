@@ -17,6 +17,8 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  release:
+    types: [published]     # a release published on github.com also builds + attaches the installers
 
 permissions:
   contents: write
@@ -216,6 +218,10 @@ jobs:
           title="BLOODBOS Radio ${GITHUB_REF_NAME#v}"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" $files --clobber
+            body=$(gh release view "$GITHUB_REF_NAME" --json body --jq .body)
+            if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+              gh release edit "$GITHUB_REF_NAME" --notes-file packaging/release-notes.md
+            fi
           else
             gh release create "$GITHUB_REF_NAME" $files --title "$title" --notes-file packaging/release-notes.md
           fi
