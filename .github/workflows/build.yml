@@ -1,5 +1,7 @@
 # Builds the installers for Windows, macOS and Linux, tests every one of them,
 # and — when a version tag like v1.2.0 is pushed — publishes a GitHub Release.
+# Every change on main also refreshes the "Test build" pre-release (tag
+# `testing`): the same downloads, from the newest code, to try before a release.
 #
 # To make a release:  bump src/version.py, commit, then
 #     git tag v1.2.0 && git push origin v1.2.0
@@ -238,4 +240,66 @@ jobs:
             fi
           else
             gh release create "$GITHUB_REF_NAME" $files --title "$title" --notes-file packaging/release-notes.md
+          fi
+
+  test_build:
+    # The newest code on main as downloads: the "Test build" pre-release (tag
+    # `testing`). GitHub never counts a pre-release as the latest release, so
+    # the README's download links, install.sh and the app's update check all
+    # stay on the real release.
+    needs: [windows, linux, macos, linux_installer]
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.windows.result == 'success' && needs.linux.result == 'success' &&
+      needs.macos.result == 'success' && needs.linux_installer.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Publish the test build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp install.sh artifacts/install.sh
+          mapfile -t files < <(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' \
+              -o -name '*.deb' -o -name '*.tar.gz' -o -name 'install.sh' \) | sort)
+          printf '%s\n' "${files[@]}"
+          v=$(python3 -c "import sys; sys.path.insert(0,'src'); from version import __version__; print(__version__)")
+          short="${GITHUB_SHA::7}"
+          title="Test build: $v ($short)"
+          repo="https://github.com/$GITHUB_REPOSITORY"
+          {
+            echo "**Not an official release.** The newest code, built $(date -u '+%b %-d, %H:%M') UTC from [\`$short\`]($repo/commit/$GITHUB_SHA) — for trying changes before they're released. This page is replaced by every change."
+            echo
+            echo "The official version is always at [Releases → Latest]($repo/releases/latest)."
+            echo
+            echo "| Your computer | File |"
+            echo "|---|---|"
+            echo "| Windows 10 / 11 | **BLOODBOS-Radio-Setup-Windows.exe** |"
+            echo "| Mac with an Apple chip | **BLOODBOS-Radio-macOS-AppleSilicon.dmg** |"
+            echo "| Mac with an Intel chip | **BLOODBOS-Radio-macOS-Intel.dmg** |"
+            echo "| Ubuntu / Debian / Mint / Pop!_OS | **bloodbos-radio_amd64.deb** |"
+            echo "| Linux (any) | in a terminal: \`curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/install.sh \| bash -s -- --testing\` |"
+            echo
+            echo "Back to the official version any time: install it from Releases → Latest (Linux: the same line without \`--testing\`)."
+          } > notes.md
+          # Same page, new files: move the tag and swap the downloads. Publishing
+          # a new release each time would email everyone watching the repo on
+          # every change. If GitHub won't let this token move the tag (it can
+          # refuse when workflow files changed), start the page over instead.
+          if gh release view testing >/dev/null 2>&1 &&
+             gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/testing" \
+               -f sha="$GITHUB_SHA" -F force=true >/dev/null; then
+            gh release upload testing "${files[@]}" --clobber
+            keep=$(printf '%s\n' "${files[@]}" | xargs -n1 basename)
+            gh release view testing --json assets --jq '.assets[].name' | while read -r a; do
+              grep -qxF "$a" <<<"$keep" || gh release delete-asset testing "$a" --yes
+            done
+            gh release edit testing --title "$title" --notes-file notes.md --prerelease
+          else
+            gh release delete testing --cleanup-tag --yes >/dev/null 2>&1 || true
+            gh release create testing "${files[@]}" --prerelease --target "$GITHUB_SHA" \
+              --title "$title" --notes-file notes.md
           fi

@@ -63,6 +63,20 @@ EndeavourOS and openSUSE. To remove it: `bash <(curl -fsSL https://raw.githubuse
 On Ubuntu, Debian, Mint or Pop!_OS you can instead download the **.deb** above and
 double-click it.
 
+### Test builds
+
+Every change is built before it's released, as the
+[**Test build**](https://github.com/korn788/BloodBos-music-request-bot/releases/tag/testing):
+the same downloads (Windows, Mac, .deb), made from the newest code. Use it to try a fix
+early; it may have bugs. On Linux, add `--testing` to the install line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/korn788/BloodBos-music-request-bot/main/install.sh | bash -s -- --testing
+```
+
+To go back to the official version, install it from the links above (on Linux, run the
+normal line).
+
 ---
 
 ## First start: connect your chat

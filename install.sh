@@ -21,6 +21,8 @@
 #           --source       set it up from the source code, not the ready-made app
 #           --from DIR     install from a downloaded copy of the source
 #           --bundle FILE  install a downloaded BLOODBOS-Radio-Linux-x86_64.tar.gz
+#           --testing      install the test build (the newest code, before it's
+#                          released); run without it to go back to the release
 set -euo pipefail
 
 APP_ID="bloodbos-radio"
@@ -38,7 +40,7 @@ USER_DATA="$DATA_HOME/$APP_ID"         # settings, logins, queue (the app's own 
 TARBALL_NAME="BLOODBOS-Radio-Linux-x86_64.tar.gz"
 LOG="${TMPDIR:-/tmp}/$APP_ID-selftest.log"
 
-YES=0; LAUNCH=1; FROM=""; UNINSTALL=0; SOURCE=0; BUNDLE=
+YES=0; LAUNCH=1; FROM=""; UNINSTALL=0; SOURCE=0; BUNDLE=""; TESTING=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --yes|-y) YES=1 ;;
@@ -48,6 +50,7 @@ while [ $# -gt 0 ]; do
         --bundle) BUNDLE="$2"; shift ;;
         --uninstall) UNINSTALL=1 ;;
         --branch) BRANCH="$2"; shift ;;
+        --testing) TESTING=1 ;;
         -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         *) echo "unknown option: $1"; exit 2 ;;
     esac
@@ -262,9 +265,15 @@ if [ -n "$BUNDLE" ]; then
     [ -f "$BUNDLE" ] || die "--bundle: can't find $BUNDLE"
     TARBALL="$BUNDLE"; MODE=bundle
 elif [ "$SOURCE" -eq 0 ] && [ "$(uname -m)" = "x86_64" ]; then
-    say "Downloading $APP_NAME"
+    if [ "$TESTING" -eq 1 ]; then
+        say "Downloading $APP_NAME (test build — the newest code, not a release)"
+        DOWNLOADS="https://github.com/$REPO/releases/download/testing"
+    else
+        say "Downloading $APP_NAME"
+        DOWNLOADS="https://github.com/$REPO/releases/latest/download"
+    fi
     TARBALL="$(mktemp)"
-    if fetch "https://github.com/$REPO/releases/latest/download/$TARBALL_NAME" "$TARBALL" \
+    if fetch "$DOWNLOADS/$TARBALL_NAME" "$TARBALL" \
             && tar -tzf "$TARBALL" bloodbos-radio/bloodbos-radio >/dev/null 2>&1; then
         MODE=bundle
     else
