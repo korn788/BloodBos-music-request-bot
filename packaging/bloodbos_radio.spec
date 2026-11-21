@@ -33,7 +33,7 @@ binaries = []
 hiddenimports = [
     "chat", "chat.commands", "chat.http_util", "chat.kick", "chat.manager",
     "chat.oauth_local", "chat.owncast", "chat.twitch",
-    "setup_dialog", "selftest", "youtube_api",
+    "setup_dialog", "selftest", "youtube_api", "request_text",
 ]
 if os.path.isfile(os.path.join(SRC, "_build_keys.py")):
     hiddenimports.append("_build_keys")

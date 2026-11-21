@@ -119,6 +119,10 @@ ever acts strangely, select the source in OBS and click **Refresh**.
 
 \* Tick **Let every viewer control playback** in Setup → *Player & OBS* to open these up to everyone.
 
+Viewers can paste a song exactly as their phone shares it — for example
+*"Listen to Blind by Korn on #SoundCloud https://on.soundcloud.com/…"* after `!sr`. The bot
+uses the YouTube, SoundCloud or Spotify link in the message and ignores the text around it.
+
 In the player you can also paste links or search, right-click any song in the queue
 (*Play now*, *Play next*, *Move up/down*, *Remove*, *Block*), and use the 🚫 button to
 stop a song instantly and block it from ever being requested again.

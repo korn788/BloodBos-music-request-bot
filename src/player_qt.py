@@ -48,6 +48,7 @@ from PyQt6.QtGui import (
 
 from audio_engine import AudioEngine, Track, TrackSource, PlayerState
 from queue_manager import QueueManager
+from request_text import clean_request
 from status_server import StatusServer
 from playlist_export import (SessionLog, load_settings, save_settings,
                              export_session, ExportError, channel_name, track_entry,
@@ -1599,7 +1600,9 @@ class PlayerWindow(QMainWindow):
         worker thread. It's how chat bots and the website learn whether the
         song really made it — see _report for the result shape.
         """
-        text = (text or "").strip()
+        # A song shared from a phone app comes with a line of text in front of
+        # the link ("Listen to … on #SoundCloud https://…"): keep just the link.
+        text = clean_request(text)
         if not text:
             self._report(on_done, False, "empty", "Usage: !sr <song name or link>")
             return
@@ -2710,7 +2713,7 @@ class PlayerWindow(QMainWindow):
     def api_addsong(self, text, user, platform, on_done=None):
         """Entry point for every chat/web request (HTTP API and the in-process
         Kick bot). on_done(result) fires once with the real outcome."""
-        key = ((user or "").strip().lower(), (text or "").strip().lower())
+        key = ((user or "").strip().lower(), clean_request(text).lower())
         now = time.monotonic()
         with self._addsong_lock:
             recent = self._recent_addsong

@@ -11,6 +11,8 @@
 
 import asyncio
 
+from request_text import clean_request
+
 REQUEST_WAIT = 125          # the player answers within 100s; leave headroom
 
 
@@ -54,6 +56,12 @@ class CommandRouter:
         arg = parts[1].strip() if len(parts) > 1 else ""
         w = self.w
 
+        if cmd in ("!sr", "!addsong", "!request", "!songrequest", "!sc") or \
+                (cmd == "!play" and arg):
+            # "Listen to … on #SoundCloud https://…" pasted from a phone: the
+            # link is the request, the words in front are just the share text.
+            arg = clean_request(arg)
+
         if cmd in ("!sr", "!addsong", "!request", "!songrequest") or (cmd == "!play" and arg):
             if not arg:
                 await reply("Usage: !sr <song name or link>")
@@ -65,7 +73,7 @@ class CommandRouter:
             return True
 
         if cmd == "!sc":
-            if "soundcloud.com" not in arg.lower():
+            if "soundcloud.com/" not in arg.lower():
                 await reply("Usage: !sc <SoundCloud link>")
                 return True
             await reply("🔎 Adding SoundCloud track...")

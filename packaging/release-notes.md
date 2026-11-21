@@ -15,6 +15,7 @@ Then follow the **Setup** window that opens by itself: click **Connect Twitch**,
 ## New in 1.0.1
 
 - **Fixed: the music video replaying the same few seconds right before a song ends.** When a song's audio got stuck for a moment (a network hiccup, or a song that goes quiet at its very end), the video kept playing, got pulled back, and played the same stretch again and again. Now the video waits for the audio — in the OBS widget and in the app's video window.
+- **Songs shared from a phone work as requests.** Sharing from the SoundCloud app (and others) adds a line like *"Listen to … on #SoundCloud"* in front of the link; when viewers pasted all of it after `!sr` or `!sc`, the request failed. The bot now picks out the YouTube, SoundCloud or Spotify link and ignores the rest.
 - **The OBS widget reloads itself when you update the app**, so OBS never keeps running an old copy. Updating from 1.0.0: refresh the browser source once after installing (select it in OBS and click **Refresh**).
 - **Playlist export** suggests a title from the day the stream started, not the day you press Export.
 - Other Twitch or Kick tools set up on your computer can no longer change which app the sign-in buttons use.
