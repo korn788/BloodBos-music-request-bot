@@ -2479,8 +2479,14 @@ class PlayerWindow(QMainWindow):
                 return
 
         import datetime
+        # Name it after the day the stream started (the site files it under that
+        # date too), not the day Export is pressed — those differ after midnight.
+        try:
+            day = datetime.date.fromisoformat((self.session_log.started_at or "")[:10])
+        except ValueError:
+            day = datetime.date.today()
         default_title = self.session_log.title or \
-            f"Stream \u2014 {datetime.date.today().strftime('%a %b %d, %Y').replace(' 0', ' ')}"
+            f"Stream \u2014 {day.strftime('%a %b')} {day.day}, {day.year}"
         choice = self._site_export_dialog(default_title, len(played), len(queued),
                                           bool(settings.get("include_queue")),
                                           bool(self.session_log.exported_url))
