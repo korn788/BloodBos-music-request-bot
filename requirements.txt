@@ -1,0 +1,6 @@
+PyQt6>=6.5
+python-vlc>=3.0.18122
+aiohttp>=3.9
+curl_cffi>=0.7
+certifi
+pynput>=1.7; sys_platform != "darwin"

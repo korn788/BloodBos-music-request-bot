@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Now Playing</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --w: 500px; --video-h: 282px;
+    --bg: rgba(10, 12, 20, 0.88); --border: rgba(78, 204, 163, 0.2);
+    --text: #eee; --muted: rgba(200, 200, 200, 0.5);
+    --accent-yt: #ff4444; --accent-sc: #ff5500; --accent: #4ecca3;
+    --bar-bg: rgba(255,255,255,0.08); --radius: 14px; --margin: 30px;
+    --font: 'Segoe UI', sans-serif; --title-size: 16px; --artist-size: 13px;
+  }
+  /* Sized to the browser source, NOT hardcoded to 1080p. A browser source
+     renders and composites its ENTIRE surface every frame regardless of how
+     much of it has content, so a 1920x1080 canvas holding a ~500x400 card was
+     making OBS composite ~1.9M pixels to show ~200k. Set the source's
+     Width/Height in OBS to just fit the card (roughly 560 x 500) and position
+     it in the scene there. */
+  html, body { background: transparent; width: 100%; height: 100%; overflow: hidden; font-family: var(--font); }
+  #root { position: fixed; width: var(--w); display: flex; flex-direction: column; }
+  #root.bottom-right { bottom: var(--margin); right: var(--margin); }
+  #root.bottom-left { bottom: var(--margin); left: var(--margin); }
+  #root.top-right { top: var(--margin); right: var(--margin); }
+  #root.top-left { top: var(--margin); left: var(--margin); }
+  #root.center { top: 50%; left: 50%; transform: translate(-50%, -50%); }
+  #screen-wrap { perspective: 900px; perspective-origin: 50% 100%; position: relative; z-index: 2; height: 0; overflow: visible; }
+  #screen { width: var(--w); height: var(--video-h); position: absolute; bottom: 0; left: 0; background: #000; border-radius: calc(var(--radius) - 2px) calc(var(--radius) - 2px) 0 0; overflow: hidden; box-shadow: 0 -4px 24px rgba(0,0,0,0.7), 0 0 0 1px var(--border); transform-origin: bottom center; transform: rotateX(-92deg); opacity: 0; transition: transform 0.55s cubic-bezier(0.34,1.1,0.64,1), opacity 0.3s ease; pointer-events: none; }
+  #screen.open { transform: rotateX(0deg); opacity: 1; pointer-events: auto; }
+  #screen.settled { transform: none; transition: none; }
+  #screen canvas { width: 100%; height: 100%; display: block; }
+  /* The video element is decode-only. It must stay technically "visible" so
+     Chromium keeps decoding at full rate, so we park it offscreen instead of
+     display:none. */
+  #mvVideo { position: fixed; left: -9999px; top: 0; width: 4px; height: 4px; opacity: 0; pointer-events: none; }
+  #card { width: var(--w); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px 12px; backdrop-filter: blur(12px); position: relative; z-index: 3; opacity: 0; transform: translateY(8px); transition: opacity 0.5s ease, transform 0.5s ease; background-size: cover; background-position: center; }
+  #card.visible { opacity: 1; transform: translateY(0); }
+  .top-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .badge { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; padding: 2px 8px; border-radius: 4px; }
+  .badge.youtube { background: var(--accent-yt); color: #fff; }
+  .badge.soundcloud { background: var(--accent-sc); color: #fff; }
+  .mv-badge { font-size: 9px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; background: rgba(255,68,68,0.2); color: var(--accent-yt); border: 1px solid rgba(255,68,68,0.3); }
+  .title { font-size: var(--title-size); font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .artist { font-size: var(--artist-size); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .requested { font-size: 10px; color: var(--accent); opacity: 0.6; margin-top: 3px; }
+  .progress-wrap { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+  .bar { flex: 1; height: 3px; background: var(--bar-bg); border-radius: 2px; overflow: hidden; }
+  .fill { height: 100%; border-radius: 2px; transition: width 0.8s linear; width: 0%; }
+  .fill.youtube { background: var(--accent-yt); }
+  .fill.soundcloud { background: var(--accent-sc); }
+  .time { font-size: 10px; color: var(--muted); font-family: Consolas, monospace; min-width: 34px; text-align: center; }
+  #card.paused .title { opacity: 0.6; }
+  #card.paused .fill { opacity: 0.4; }
+  body.mv-playing #card { backdrop-filter: none; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="root" class="bottom-right">
+  <div id="screen-wrap"><div id="screen"><canvas id="mvCanvas"></canvas></div></div>
+  <div id="card">
+    <div class="top-row">
+      <span class="badge" id="badge">YouTube</span>
+      <span class="mv-badge" id="mvBadge" style="display:none">MUSIC VIDEO</span>
+    </div>
+    <div class="title" id="title">No song playing</div>
+    <div class="artist" id="artist"></div>
+    <div class="requested" id="requested"></div>
+    <div class="progress-wrap" id="progressWrap">
+      <span class="time" id="elapsed">0:00</span>
+      <div class="bar"><div class="fill" id="fill"></div></div>
+      <span class="time" id="duration">0:00</span>
+    </div>
+  </div>
+</div>
+<video id="mvVideo" muted playsinline></video>
+<script>
+/* Talk to whichever player served this page (so a changed port just works);
+   fall back to the default address if OBS loaded the file straight from disk. */
+const ORIGIN=(location.protocol==='http:'||location.protocol==='https:')?location.origin:'http://localhost:9111';
+const STATUS=ORIGIN+'/status', THEME=ORIGIN+'/theme', STREAM=ORIGIN+'/stream/';
+/* Poll fast while we're WAITING for a music video to become active, slow once
+   it is. mvActive flips only after the engine's background yt-dlp video
+   resolve lands, so a flat 1s poll added up to a second of pure latency to an
+   already-late video. Timing data comes from the local interpolated clock, not
+   the poll, so the slow rate costs nothing once the video is up. */
+const POLL_FAST=250, POLL_IDLE=1000;
+let pollTimer=null, pollMs=0;
+/* Sync contract — must match the SYNC_* constants in player_qt.py. The app's
+   video window and this one can't see each other; the only thing keeping them
+   in step is that both steer to the SAME reference (the audio engine's clock)
+   with the SAME tolerances. Overridden by /status if the server sends them. */
+const SYNC={ENGAGE:0.25,RELEASE:0.08,TRIM:0.04,HARD:1.50,SEEK_GAP:4.0,JUMP:2.50,SETTLE:1.50};
+const SYNC_MS=150;
+const root=document.getElementById('root'), card=document.getElementById('card'), screen=document.getElementById('screen');
+const mvVideo=document.getElementById('mvVideo'), mvCanvas=document.getElementById('mvCanvas');
+const ctx=mvCanvas.getContext('2d',{alpha:false,desynchronized:true});
+const badge=document.getElementById('badge'), mvBadge=document.getElementById('mvBadge'), titleEl=document.getElementById('title');
+const artistEl=document.getElementById('artist'), reqEl=document.getElementById('requested');
+const elapsedEl=document.getElementById('elapsed'), durEl=document.getElementById('duration'), fillEl=document.getElementById('fill'), progWrap=document.getElementById('progressWrap');
+let lastTitle='', lastVideoId='', wasVisible=false, mvShowing=false;
+let lastElapsed=0;
+let rafId=0;
+
+/* ---- audio clock ----------------------------------------------------------
+   We poll once a second, but by the time a response is parsed the 'elapsed'
+   inside it is already stale by the poll latency. Steering straight to that
+   number parks this player a fixed distance behind the app's window even when
+   its own corrector is perfect. So we anchor on the server's sample time and
+   interpolate locally between polls. */
+const clock={base:0,at:0,paused:false,valid:false,resync:false};
+function clockNow(){
+  if(!clock.valid)return 0;
+  if(clock.paused)return clock.base;
+  return clock.base+(performance.now()-clock.at)/1000;
+}
+function setClock(elapsed,elapsedAt,paused){
+  const nowMs=performance.now();
+  let base=elapsed;
+  if(elapsedAt){                       // server-stamped: add the transit lag
+    const lag=Date.now()/1000-elapsedAt;
+    if(lag>0&&lag<2)base+=lag;         // ignore nonsense (clock skew, stalls)
+  }
+  // A discontinuity in the AUDIO clock is a user seek or a track restart —
+  // snap to it instead of trying to trim our way there.
+  if(clock.valid&&!paused&&!clock.paused&&Math.abs(base-clockNow())>SYNC.JUMP)
+    clock.resync=true;
+  clock.base=base;clock.at=nowMs;clock.paused=paused;clock.valid=true;
+  lastElapsed=base;
+}
+
+function fmt(s){s=Math.max(0,Math.floor(s||0));if(s>=3600)return`${Math.floor(s/3600)}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;return`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;}
+
+async function loadTheme(){try{const res=await fetch(THEME);const t=await res.json();if(!t||!Object.keys(t).length)return;const r=document.documentElement;
+if(t.width)r.style.setProperty('--w',t.width+'px');
+if(t.background_color)r.style.setProperty('--bg',t.background_color);
+if(t.border_color)r.style.setProperty('--border',t.border_color);
+if(t.text_color)r.style.setProperty('--text',t.text_color);
+if(t.muted_color)r.style.setProperty('--muted',t.muted_color);
+if(t.youtube_color)r.style.setProperty('--accent-yt',t.youtube_color);
+if(t.soundcloud_color)r.style.setProperty('--accent-sc',t.soundcloud_color);
+if(t.accent_color)r.style.setProperty('--accent',t.accent_color);
+if(t.progress_bar_bg)r.style.setProperty('--bar-bg',t.progress_bar_bg);
+if(t.border_radius!=null)r.style.setProperty('--radius',t.border_radius+'px');
+if(t.margin!=null)r.style.setProperty('--margin',t.margin+'px');
+if(t.video_height)r.style.setProperty('--video-h',t.video_height+'px');
+if(t.font_family)r.style.setProperty('--font',`'${t.font_family}', sans-serif`);
+if(t.title_font_size)r.style.setProperty('--title-size',t.title_font_size+'px');
+if(t.artist_font_size)r.style.setProperty('--artist-size',t.artist_font_size+'px');
+if(t.position)root.className=t.position.replace(/_/g,'-');
+if(t.background_image)card.style.backgroundImage=`url(${t.background_image})`;
+if(t.show_requested_by===false)reqEl.classList.add('hidden');
+if(t.show_progress_bar===false)progWrap.classList.add('hidden');
+if(t.show_source_badge===false)badge.classList.add('hidden');
+if(t.show_mv_badge===false)mvBadge.classList.add('hidden');
+}catch(e){}}
+
+/* ---- canvas painter -------------------------------------------------------
+   OBS's browser source (CEF) can present <video> element frames unevenly:
+   the accelerated video layer and OBS's frame grab don't line up, so playback
+   judders in OBS while the same video is smooth in a normal browser or player.
+   Fix: never let OBS capture the video element. The <video> is parked
+   offscreen and used purely as a decoder; every browser-source tick we
+   drawImage() the current frame onto a plain 2D canvas. OBS captures the
+   canvas — a flat raster layer with no video-layer sync involved. */
+function sizeCanvas(){
+  const w=screen.clientWidth||500, h=screen.clientHeight||282;
+  if(mvCanvas.width!==w||mvCanvas.height!==h){mvCanvas.width=w;mvCanvas.height=h;}
+}
+function paint(){
+  rafId=requestAnimationFrame(paint);
+  if(!mvShowing||mvVideo.readyState<2)return;
+  sizeCanvas();
+  const vw=mvVideo.videoWidth,vh=mvVideo.videoHeight;
+  if(!vw||!vh)return;
+  // object-fit: cover
+  const cw=mvCanvas.width,ch=mvCanvas.height;
+  const scale=Math.max(cw/vw,ch/vh);
+  const dw=vw*scale,dh=vh*scale;
+  ctx.drawImage(mvVideo,(cw-dw)/2,(ch-dh)/2,dw,dh);
+}
+function startPaint(){if(!rafId)rafId=requestAnimationFrame(paint);}
+function stopPaint(){if(rafId){cancelAnimationFrame(rafId);rafId=0;}ctx.fillStyle='#000';ctx.fillRect(0,0,mvCanvas.width,mvCanvas.height);}
+
+let syncSettle=0, syncLastSeek=-1e9, syncRate=1;
+
+function showMV(id){if(mvShowing&&lastVideoId===id)return;
+mvVideo.src=STREAM+id;
+setRate(1);syncSettle=performance.now();syncLastSeek=-1e9;clock.resync=true;syncReady=false;posMark=null;syncStalls=0;hudSeeks=0;
+// Land on the audio clock as soon as we can seek, then hold it with rate trim.
+mvVideo.addEventListener('loadedmetadata',()=>{try{mvVideo.currentTime=clockNow();}catch(_){}syncSettle=performance.now();},{once:true});
+mvVideo.play().catch(()=>{});screen.classList.add('open');document.body.classList.add('mv-playing');mvShowing=true;lastVideoId=id;startPaint();}
+
+var hideMV=function(){if(!mvShowing)return;screen.classList.remove('open');screen.classList.remove('settled');document.body.classList.remove('mv-playing');mvVideo.pause();setRate(1);mvVideo.src='';mvShowing=false;lastVideoId='';clock.valid=false;syncReady=false;posMark=null;stopPaint();}
+
+function setRate(r){if(Math.abs(r-syncRate)<0.001)return;try{mvVideo.playbackRate=r;syncRate=r;}catch(_){}}
+function hardSeek(t,nowMs){try{setRate(1);mvVideo.currentTime=Math.max(0,t);syncLastSeek=nowMs;syncSettle=nowMs;posMark=null;hudSeeks++;}catch(_){}}
+
+/* ---- sync corrector -------------------------------------------------------
+   Three tiers, identical to VideoController.sync_to in player_qt.py:
+     drift < RELEASE  ->  run at 1.0x, leave it alone
+     drift < HARD     ->  trim playbackRate +/-4% until it closes
+     drift >= HARD    ->  one rate-limited hard seek
+
+   Two traps, both of which bit the first version of this:
+
+   1. NEVER reset the settle timer from a condition that repeats. It used to
+      do `syncSettle=nowMs` on every tick where readyState<3. A <video> fed by
+      a still-spooling source dips below readyState 3 constantly, so the 1.5s
+      grace was re-armed faster than it could ever expire and the corrector
+      never ran a single time -- the video free-ran exactly as if there were
+      no sync code at all. The grace is now armed on the TRANSITION back to
+      ready, once.
+
+   2. The HARD tier must not sit behind the settle gate. It's the backstop
+      that bounds worst-case drift; gating it lets a stalling stream drift
+      arbitrarily far while it "settles". */
+let syncReady=false, posMark=null, syncDrift=0, syncStalls=0, hudSeeks=0;
+
+/* ---- end of the music video ------------------------------------------------
+   The audio-only stream the engine plays is often a little longer than the
+   music video, so the audio clock keeps running after the video's last frame.
+   That used to cause the loop right before the song ended:
+     1. the video ended, and an ended <video> reports paused=true;
+     2. the "resuming" branch took that for an un-pause and called play();
+     3. play() on an ENDED <video> rewinds it to 0 (HTML spec), so the start of
+        the music video replayed, the drift check yanked it back to the end, it
+        ended again — round and round until the song finished.
+   Now, once the audio clock reaches the end of the video, the video is left
+   alone and the canvas keeps showing its last frame. Only a clock that is
+   clearly back inside the video (a seek back, or the same video requested
+   again) makes it play again — from that point, never from 0. */
+const END_SLACK=2.0;   // s: a video finishing up to this far ahead of the audio counts as done
+
+function syncTick(){
+  if(!mvShowing||!clock.valid)return;
+  const nowMs=performance.now();
+
+  if(clock.paused){                       // pause means pause; mirror the app
+    if(!mvVideo.paused&&!mvVideo.ended){mvVideo.pause();setRate(1);}
+    syncReady=false;return;
+  }
+
+  const live=clockNow();
+  // The engine used to report elapsed 0 while it wasn't strictly playing
+  // (track changes, loading). Never let a bogus zero yank the video around.
+  if(live<=0.05&&mvVideo.currentTime>5)return;
+
+  const vdur=mvVideo.duration;
+  if(isFinite(vdur)&&vdur>0){
+    if(live>=vdur-0.05){                  // audio is at/after the video's last frame
+      if(syncRate!==1)setRate(1);
+      return;                             // let it play out, then hold the last frame
+    }
+    if(mvVideo.ended){
+      if(vdur-live<=END_SLACK)return;     // finished a touch early: hold the last frame
+      // The clock is well inside the video again (seek back / replayed song):
+      // seek FIRST so the element is no longer "ended", then play from there.
+      hardSeek(live,nowMs);mvVideo.play().catch(()=>{});syncReady=false;return;
+    }
+  }
+
+  if(mvVideo.paused){                     // resuming: re-anchor, don't inherit
+    try{mvVideo.currentTime=live;}catch(_){}
+    mvVideo.play().catch(()=>{});syncReady=false;return;
+  }
+
+  const ready=(mvVideo.readyState>=3)&&!mvVideo.seeking;
+  if(!ready){syncReady=false;return;}
+  if(!syncReady){syncReady=true;syncSettle=nowMs;posMark=null;}
+
+  const pos=mvVideo.currentTime;
+
+  // ---- stall detection ----
+  // A <video> starved by the spool doesn't always drop readyState -- it just
+  // quietly stops advancing, losing a second of ground per second. Rate trim
+  // has no authority over that; only a seek recovers it.
+  let stalled=false;
+  if(!posMark)posMark=[pos,nowMs];
+  else if(nowMs-posMark[1]>=600){
+    if(pos-posMark[0]<0.05){stalled=true;syncStalls++;}
+    posMark=[pos,nowMs];
+  }
+
+  const drift=pos-live, mag=Math.abs(drift);   // positive = video is ahead
+  syncDrift=drift;
+
+  if(clock.resync){clock.resync=false;hardSeek(live,nowMs);return;}
+
+  // Backstop first -- deliberately NOT behind the settle gate.
+  if(mag>=SYNC.HARD||(stalled&&mag>SYNC.ENGAGE)){
+    if(nowMs-syncLastSeek>=SYNC.SEEK_GAP*1000)hardSeek(live,nowMs);
+    return;
+  }
+  if(nowMs-syncSettle<SYNC.SETTLE*1000)return;
+
+  if(syncRate===1){
+    if(mag>SYNC.ENGAGE)setRate(drift>0?1-SYNC.TRIM:1+SYNC.TRIM);
+  }else{
+    if(mag<SYNC.RELEASE)setRate(1);
+    else if((drift>0)!==(syncRate<1))setRate(drift>0?1-SYNC.TRIM:1+SYNC.TRIM);
+  }
+}
+
+/* ---- debug HUD (append ?debug=1 to the browser-source URL) ---------------- */
+const SYNC_DEBUG=new URLSearchParams(location.search).has('debug');
+let hud=null;
+if(SYNC_DEBUG){
+  hud=document.createElement('div');
+  hud.style.cssText='position:fixed;top:8px;left:8px;z-index:99;background:rgba(0,0,0,.8);'
+    +'color:#4ecca3;font:11px/1.45 Consolas,monospace;padding:8px 10px;border-radius:6px;'
+    +'white-space:pre;pointer-events:none;border:1px solid rgba(78,204,163,.35)';
+  document.body.appendChild(hud);
+  setInterval(()=>{
+    const ms=(syncDrift*1000).toFixed(0);
+    hud.textContent=
+      `clock   ${clockNow().toFixed(2)}s\n`+
+      `video   ${(mvShowing?mvVideo.currentTime:0).toFixed(2)}s\n`+
+      `DRIFT   ${ms>0?'+':''}${ms} ms   ${syncDrift>0?'(ahead)':'(behind)'}\n`+
+      `rate    ${syncRate.toFixed(2)}x   ready ${mvVideo.readyState}\n`+
+      `stalls  ${syncStalls}   seeks ${hudSeeks}`;
+  },200);
+}
+
+async function poll(){try{const res=await fetch(STATUS);const d=await res.json();
+if(!d||!d.title){if(wasVisible){card.classList.remove('visible');hideMV();wasVisible=false;}return;}
+const isSC=d.scActive===true,src=isSC?'soundcloud':'youtube';
+badge.textContent=isSC?'SoundCloud':'YouTube';badge.className='badge '+src;fillEl.className='fill '+src;
+// Adopt the server's sync contract so both players can never disagree.
+if(d.syncEngage!=null)SYNC.ENGAGE=d.syncEngage;
+if(d.syncRelease!=null)SYNC.RELEASE=d.syncRelease;
+if(d.syncTrim!=null)SYNC.TRIM=d.syncTrim;
+if(d.syncHard!=null)SYNC.HARD=d.syncHard;
+const e0=d.elapsedSeconds||d.elapsed||0;
+setClock(e0,d.elapsedAt||0,!!d.isPaused);
+if(d.mvActive&&d.videoId){mvBadge.style.display='inline-block';showMV(d.videoId);setPollRate(POLL_IDLE);}
+else{mvBadge.style.display='none';hideMV();
+// isMV means the engine has flagged a music video but hasn't finished
+// resolving its stream yet — poll hard so we show it the moment it lands.
+setPollRate(d.isMV?POLL_FAST:POLL_IDLE);}
+const nt=d.title||'Unknown';if(nt!==lastTitle){titleEl.textContent=nt;lastTitle=nt;}
+artistEl.textContent=d.artist||'';
+const by=d.requestedBy||(isSC?d.scRequestedBy:'');reqEl.textContent=by?`Requested by ${by}`:'';reqEl.style.display=by?'block':'none';
+const e=e0,dur=d.songDuration||d.durationSeconds||d.duration||0;
+elapsedEl.textContent=fmt(e);durEl.textContent=fmt(dur);fillEl.style.width=dur>0?`${Math.min(100,(e/dur)*100)}%`:'0%';
+card.classList.toggle('paused',!!d.isPaused);
+if(!wasVisible){card.classList.add('visible');wasVisible=true;}
+}catch(err){if(wasVisible){card.classList.remove('visible');hideMV();wasVisible=false;}}}
+
+function setPollRate(ms){
+  if(ms===pollMs)return;
+  pollMs=ms;
+  if(pollTimer)clearInterval(pollTimer);
+  pollTimer=setInterval(poll,ms);
+}
+loadTheme();setPollRate(POLL_IDLE);poll();
+// Sync runs far faster than the poll: the clock is interpolated locally, so
+// correcting at 150ms costs nothing on the server and is what actually holds
+// a sub-second lock.
+setInterval(syncTick,SYNC_MS);
+screen.addEventListener('transitionend',()=>{if(screen.classList.contains('open'))screen.classList.add('settled');});
+mvVideo.addEventListener('ended',()=>{fetch(ORIGIN+'/video-ended',{method:'POST'}).catch(()=>{});});
+</script>
+</body>
+</html>

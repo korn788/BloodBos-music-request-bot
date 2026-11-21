@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BLOODBOS Radio
+GenericName=Stream song requests
+Comment=Song-request radio for Twitch, Kick and Owncast streams
+Exec=bloodbos-radio
+Icon=bloodbos-radio
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;stream;twitch;kick;owncast;obs;youtube;soundcloud;song request;

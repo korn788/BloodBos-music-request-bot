@@ -1,0 +1,43 @@
+# ── Never commit logins, keys or personal data ──────────────────────────────
+# The app keeps these in your user data folder, not here — these lines are a
+# safety net in case anything ends up next to the code (old versions did that).
+tokens.json
+settings.json
+*.token.json
+*token*.json
+twitch_config.json
+twitch_user_token.json
+owncast_config.json
+channel_config.json
+kick_app.json
+.kick*.json
+youtube.json
+playlist_site.json
+.soundcloud.json
+cookies.txt
+*.db
+*.sqlite
+queue_state.json
+stream_session.json
+blocked_songs.json*
+sessions/
+*.log
+*.lock
+src/_build_keys.py
+portable.txt
+data/
+
+# ── build output ────────────────────────────────────────────────────────────
+build/
+dist/
+vendor/
+*.spec.bak
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.dmg
+*.deb
+*.AppImage
+Output/
