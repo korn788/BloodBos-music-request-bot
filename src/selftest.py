@@ -4,7 +4,8 @@
 # installer never gets published. Needs no network, no audio device and no
 # screen: it plays a generated tone through VLC into a dummy audio output,
 # builds the whole UI offscreen, and asks the built-in web server for the
-# OBS widget.
+# OBS widget. With BLOODBOS_SELFTEST_MEDIA="<url> <url>" it also streams
+# those files (the AppImage tests use https files on GitHub).
 
 import json
 import math
@@ -97,6 +98,30 @@ def run():
         if state != vlc.State.Playing:
             raise RuntimeError(f"VLC could not play a test tone (state {state})")
         ok("VLC plays audio")
+
+        # Releases run this with BLOODBOS_SELFTEST_MEDIA set to a few small
+        # files on GitHub (https): proves streaming, the secure connection and
+        # the audio + video decoders work — for the AppImage, using only what
+        # it carries.
+        for url in os.environ.get("BLOODBOS_SELFTEST_MEDIA", "").split():
+            inst = vlc.Instance("--quiet", "--aout=dummy", "--vout=dummy",
+                                *vlc_loader.instance_args())
+            player = inst.media_player_new()
+            player.set_media(inst.media_new(url))
+            player.play()
+            deadline = time.time() + 30
+            while time.time() < deadline and not (
+                    player.get_state() == vlc.State.Playing and player.get_time() > 300):
+                if player.get_state() in (vlc.State.Error, vlc.State.Ended):
+                    break
+                time.sleep(0.1)
+            state, at = player.get_state(), player.get_time()
+            player.stop()
+            player.release()
+            inst.release()
+            if not (state == vlc.State.Playing and at > 300):
+                raise RuntimeError(f"VLC could not stream {url} (state {state}, {at} ms)")
+            ok(f"VLC streams {url.rsplit('/', 1)[-1]} over the network")
 
         from PyQt6.QtWidgets import QApplication
         app = QApplication.instance() or QApplication(sys.argv)

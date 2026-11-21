@@ -204,7 +204,8 @@ class AudioEngine:
         # audio system, or "--aout=dummy" for silent testing.
         import shlex
         extra = shlex.split(os.environ.get("BLOODBOS_VLC_ARGS", ""))
-        self._instance = vlc.Instance("--no-video", "--quiet", "--no-xlib", *extra)
+        self._instance = vlc.Instance("--no-video", "--quiet", "--no-xlib",
+                                      *vlc_loader.instance_args(), *extra)
         self._player: vlc.MediaPlayer = self._instance.media_player_new()
         self._state = PlayerState.STOPPED
         self._current_track: Optional[Track] = None

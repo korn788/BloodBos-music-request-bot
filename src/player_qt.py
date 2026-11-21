@@ -47,6 +47,7 @@ from PyQt6.QtGui import (
 )
 
 from audio_engine import AudioEngine, Track, TrackSource, PlayerState
+import vlc_loader
 from queue_manager import QueueManager
 from request_text import clean_request
 from status_server import StatusServer
@@ -669,8 +670,9 @@ class VideoController:
             # remembers it). A --no-audio instance has no audio output at all, so
             # it renders video silently without ever touching a mute switch.
             self._instance = (vlc.Instance("--quiet", "--no-audio",
-                                           "--no-video-title-show")
-                              or vlc.Instance("--no-audio"))
+                                           "--no-video-title-show",
+                                           *vlc_loader.instance_args())
+                              or vlc.Instance("--no-audio", *vlc_loader.instance_args()))
             self._owns_instance = True
             self._player = self._instance.media_player_new()
             try:

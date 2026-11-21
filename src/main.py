@@ -155,6 +155,9 @@ def main(argv=None):
     first_launch = not os.path.exists(os.path.join(app_paths.data_dir(), "settings.json"))
     _setup_logging()
     _setup_environment()
+    note = desktop.integrate_appimage(app_paths.resource("assets", "icon.png"))
+    if note:
+        print(f"[Desktop] {note}")
 
     from PyQt6.QtWidgets import QApplication, QMessageBox
     app = QApplication(sys.argv)

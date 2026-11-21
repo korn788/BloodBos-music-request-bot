@@ -20,8 +20,9 @@ now-playing card shows up in **OBS**.
 | **Windows 10 / 11** | [**BLOODBOS-Radio-Setup-Windows.exe**](https://github.com/korn788/BloodBos-music-request-bot/releases/latest/download/BLOODBOS-Radio-Setup-Windows.exe) | double-click it |
 | **Mac with an Apple chip** (M1, M2, M3, M4…) | [**BLOODBOS-Radio-macOS-AppleSilicon.dmg**](https://github.com/korn788/BloodBos-music-request-bot/releases/latest/download/BLOODBOS-Radio-macOS-AppleSilicon.dmg) | open it, drag the app to Applications |
 | **Mac with an Intel chip** | [**BLOODBOS-Radio-macOS-Intel.dmg**](https://github.com/korn788/BloodBos-music-request-bot/releases/latest/download/BLOODBOS-Radio-macOS-Intel.dmg) | open it, drag the app to Applications |
-| **Linux** (any) | paste one line into a terminal — see below | |
+| **Linux** (any) — no terminal | [**BLOODBOS-Radio-x86_64.AppImage**](https://github.com/korn788/BloodBos-music-request-bot/releases/latest/download/BLOODBOS-Radio-x86_64.AppImage) | allow it to run, then double-click it (see below) |
 | **Ubuntu / Debian / Mint / Pop!_OS** | [**bloodbos-radio_amd64.deb**](https://github.com/korn788/BloodBos-music-request-bot/releases/latest/download/bloodbos-radio_amd64.deb) | double-click it |
+| **Linux** (any), from a terminal | paste one line — see below | |
 
 Not sure which Mac you have? Click the Apple menu  → **About This Mac**. If it says
 "Chip: Apple M…", get the Apple chip version; if it says "Processor: Intel", get Intel.
@@ -48,7 +49,19 @@ No administrator password is needed. To uninstall: Settings → Apps → BLOODBO
 
 ### Installing on Linux
 
-Open a terminal, paste this line and press Enter:
+**No terminal needed — the AppImage:**
+
+1. Download **BLOODBOS-Radio-x86_64.AppImage** (above).
+2. Right-click it → **Properties** → **Permissions**, and turn on **Allow executing file
+   as program** (on KDE: tick **Is executable**). You only do this once.
+3. Double-click it.
+
+It's one file with everything inside, VLC included — nothing else to install. The first
+time it opens, it adds itself to your app menu. To update, download the new AppImage the
+same way (you can delete the old one). Works on Ubuntu, Mint, Pop!_OS, Zorin, Fedora,
+Bazzite, Arch, CachyOS, Manjaro, openSUSE and most others.
+
+**Or from a terminal** — paste this line and press Enter:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/korn788/BloodBos-music-request-bot/main/install.sh | bash
@@ -67,7 +80,7 @@ double-click it.
 
 Every change is built before it's released, as the
 [**Test build**](https://github.com/korn788/BloodBos-music-request-bot/releases/tag/testing):
-the same downloads (Windows, Mac, .deb), made from the newest code. Use it to try a fix
+the same downloads (Windows, Mac, AppImage, .deb), made from the newest code. Use it to try a fix
 early; it may have bugs. On Linux, add `--testing` to the install line:
 
 ```bash

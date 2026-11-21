@@ -151,10 +151,15 @@ jobs:
       - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PY }}" }
       - name: System packages
+        # (VLC's video plugins, vlc-cache-gen, patchelf and the libxcb-* list
+        # are for the AppImage, which packs them.)
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends vlc-bin vlc-plugin-base libvlc5 \
-            libxcb-cursor0 libxkbcommon-x11-0 libegl1 libgl1 libfontconfig1 libdbus-1-3
+            vlc-plugin-video-output libvlc-bin patchelf \
+            libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 \
+            libegl1 libgl1 libfontconfig1 libdbus-1-3
       - run: pip install -r requirements.txt pyinstaller
       - name: Build keys
         env:
@@ -176,12 +181,30 @@ jobs:
           bloodbos-radio --selftest
       - name: Make the ready-made app download (what install.sh installs)
         run: tar -C dist -czf dist/BLOODBOS-Radio-Linux-x86_64.tar.gz bloodbos-radio
+      - name: Make the AppImage (one file, VLC inside, no terminal needed)
+        run: |
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          python3 packaging/linux/make_appimage.py dist/bloodbos-radio \
+            dist/BLOODBOS-Radio-x86_64.AppImage --appimagetool ./appimagetool
+      - name: Self-test the AppImage (its own VLC, streaming over https)
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          BLOODBOS_VLC_ARGS: --aout=dummy
+          BLOODBOS_SELFTEST_MEDIA: >-
+            https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/tests/media/sample.mp4
+            https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/tests/media/sample.webm
+        run: |
+          dist/BLOODBOS-Radio-x86_64.AppImage --selftest | tee appimage-selftest.log
+          grep -q "(bundled)" appimage-selftest.log
       - uses: actions/upload-artifact@v4
         with:
           name: linux
           path: |
             dist/bloodbos-radio_amd64.deb
             dist/BLOODBOS-Radio-Linux-x86_64.tar.gz
+            dist/BLOODBOS-Radio-x86_64.AppImage
           if-no-files-found: error
 
   linux_installer:
@@ -213,12 +236,91 @@ jobs:
       - name: Self-test the installed app
         run: $HOME/.local/bin/bloodbos-radio --selftest
 
+  appimage:
+    # The AppImage on other Linuxes, with NO VLC installed — only the basic
+    # libraries every desktop has (packaging/linux/appimage-excludelist.txt).
+    # 1. nothing else it needs may be missing  2. the self-test passes, using
+    # its own VLC, streaming over https with its own certificate list.
+    needs: linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            desktop: >-
+              apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q
+              --no-install-recommends ca-certificates libgl1 libegl1 libx11-6 libx11-xcb1 libxcb1
+              libfontconfig1 libfreetype6 libharfbuzz0b libasound2t64 libexpat1 libgpg-error0
+              libuuid1 zlib1g libdrm2 libgbm1 libwayland-client0 libfribidi0 libgmp10 libdbus-1-3
+          - image: debian:12
+            desktop: >-
+              apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q
+              --no-install-recommends ca-certificates libgl1 libegl1 libx11-6 libx11-xcb1 libxcb1
+              libfontconfig1 libfreetype6 libharfbuzz0b libasound2 libexpat1 libgpg-error0
+              libuuid1 zlib1g libdrm2 libgbm1 libwayland-client0 libfribidi0 libgmp10 libdbus-1-3
+          - image: fedora:latest
+            desktop: >-
+              dnf install -y ca-certificates mesa-libGL mesa-libEGL libX11 libX11-xcb libxcb
+              fontconfig freetype harfbuzz alsa-lib expat libgpg-error libuuid zlib-ng-compat
+              libdrm mesa-libgbm libwayland-client fribidi gmp dbus-libs findutils tar gzip
+          - image: archlinux:latest
+            desktop: >-
+              pacman -Syu --noconfirm --needed ca-certificates mesa libx11 libxcb fontconfig
+              freetype2 harfbuzz alsa-lib expat libgpg-error util-linux-libs zlib libdrm wayland
+              fribidi gmp dbus
+          - image: opensuse/tumbleweed
+            desktop: >-
+              zypper --non-interactive install ca-certificates Mesa-libGL1 Mesa-libEGL1 libX11-6
+              libX11-xcb1 libxcb1 fontconfig libfreetype6 libharfbuzz0 libasound2 libexpat1
+              libgpg-error0 libuuid1 libz1 libdrm2 libgbm1 libwayland-client0 libfribidi0
+              libgmp10 libdbus-1-3 findutils tar gzip
+    container: ${{ matrix.image }}
+    steps:
+      - name: A desktop's basic libraries (and no VLC)
+        run: ${{ matrix.desktop }}
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with: { name: linux, path: artifacts }
+      - name: No VLC on this computer
+        shell: bash
+        run: |
+          ! command -v vlc
+          ! ls /usr/lib*/libvlc.so* /usr/lib*/*/libvlc.so* 2>/dev/null
+      - name: Nothing missing from the AppImage
+        shell: bash
+        run: |
+          command -v ldd    # without it this check would find nothing and pass
+          chmod +x artifacts/BLOODBOS-Radio-x86_64.AppImage
+          cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/artifacts/BLOODBOS-Radio-x86_64.AppImage" --appimage-extract >/dev/null
+          app="$RUNNER_TEMP/squashfs-root/usr/lib/bloodbos-radio"
+          find "$app" -type f | while read -r f; do
+            [ "$(head -c4 "$f" | tr -d '\0' | tail -c3)" = "ELF" ] || continue
+            LD_LIBRARY_PATH="$app/_internal:$app/vlc" ldd "$f" 2>/dev/null | awk '/not found/ {print $1}'
+          done | sort -u > missing.txt
+          grep -v '^#' "$GITHUB_WORKSPACE/packaging/linux/appimage-excludelist.txt" > expected.txt
+          cat "$app/appimage-optional-missing.txt" >> expected.txt
+          grep -vxF -f expected.txt missing.txt > unexpected.txt || true
+          echo "from this computer: $(grep -cxF -f expected.txt missing.txt || true) libraries it doesn't have"
+          if [ -s unexpected.txt ]; then echo "The AppImage is missing:"; cat unexpected.txt; exit 1; fi
+      - name: Self-test the AppImage
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          BLOODBOS_VLC_ARGS: --aout=dummy
+          BLOODBOS_SELFTEST_MEDIA: >-
+            https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/tests/media/sample.mp4
+            https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/tests/media/sample.webm
+        run: |
+          artifacts/BLOODBOS-Radio-x86_64.AppImage --selftest | tee selftest.log
+          grep -q "(bundled)" selftest.log
+
   release:
-    needs: [windows, linux, macos, linux_installer]
+    needs: [windows, linux, macos, linux_installer, appimage]
     if: >-
       always() && startsWith(github.ref, 'refs/tags/v') &&
       needs.windows.result == 'success' && needs.linux.result == 'success' &&
-      needs.macos.result == 'success'
+      needs.macos.result == 'success' && needs.appimage.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -229,7 +331,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp install.sh artifacts/install.sh
-          files=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.tar.gz' -o -name 'install.sh' \) | sort)
+          files=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.tar.gz' \
+                  -o -name '*.AppImage' -o -name 'install.sh' \) | sort)
           echo "$files"
           title="BLOODBOS Radio ${GITHUB_REF_NAME#v}"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
@@ -247,12 +350,13 @@ jobs:
     # `testing`). GitHub never counts a pre-release as the latest release, so
     # the README's download links, install.sh and the app's update check all
     # stay on the real release.
-    needs: [windows, linux, macos, linux_installer]
+    needs: [windows, linux, macos, linux_installer, appimage]
     if: >-
       always() && github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       needs.windows.result == 'success' && needs.linux.result == 'success' &&
-      needs.macos.result == 'success' && needs.linux_installer.result == 'success'
+      needs.macos.result == 'success' && needs.linux_installer.result == 'success' &&
+      needs.appimage.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -264,7 +368,7 @@ jobs:
         run: |
           cp install.sh artifacts/install.sh
           mapfile -t files < <(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' \
-              -o -name '*.deb' -o -name '*.tar.gz' -o -name 'install.sh' \) | sort)
+              -o -name '*.deb' -o -name '*.tar.gz' -o -name '*.AppImage' -o -name 'install.sh' \) | sort)
           printf '%s\n' "${files[@]}"
           v=$(python3 -c "import sys; sys.path.insert(0,'src'); from version import __version__; print(__version__)")
           short="${GITHUB_SHA::7}"
@@ -280,6 +384,7 @@ jobs:
             echo "| Windows 10 / 11 | **BLOODBOS-Radio-Setup-Windows.exe** |"
             echo "| Mac with an Apple chip | **BLOODBOS-Radio-macOS-AppleSilicon.dmg** |"
             echo "| Mac with an Intel chip | **BLOODBOS-Radio-macOS-Intel.dmg** |"
+            echo "| Linux (any), no terminal | **BLOODBOS-Radio-x86_64.AppImage** — right-click → Properties → allow running it as a program, then double-click |"
             echo "| Ubuntu / Debian / Mint / Pop!_OS | **bloodbos-radio_amd64.deb** |"
             echo "| Linux (any) | in a terminal: \`curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/install.sh \| bash -s -- --testing\` |"
             echo

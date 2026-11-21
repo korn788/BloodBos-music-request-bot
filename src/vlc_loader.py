@@ -1,8 +1,9 @@
 # vlc_loader.py — find VLC before python-vlc goes looking for it
 #
 # Windows and macOS builds carry their own copy of VLC (libvlc + plugins) in a
-# "vlc" folder inside the app, so nobody has to install VLC separately. Linux
-# uses the system's VLC (the installer pulls it in).
+# "vlc" folder inside the app, so nobody has to install VLC separately. So does
+# the Linux AppImage; the other Linux installs use the system's VLC (the
+# installer or the .deb pulls it in).
 #
 # python-vlc reads two environment variables when it is first imported:
 #   PYTHON_VLC_LIB_PATH     the libvlc library to load
@@ -17,6 +18,12 @@ import app_paths
 
 _loaded = None
 _error = ""
+_extra = []          # options every VLC instance needs (see instance_args)
+
+
+def instance_args():
+    """Options to pass to every vlc.Instance() the app creates."""
+    return list(_extra)
 
 
 def _prepare():
@@ -53,6 +60,23 @@ def _prepare():
         if os.path.isdir(plugins):
             os.environ["PYTHON_VLC_MODULE_PATH"] = plugins
             os.environ["VLC_PLUGIN_PATH"] = plugins
+        return d
+    if sys.platform.startswith("linux"):       # the AppImage
+        lib = os.path.join(d, "libvlc.so.5")
+        core = os.path.join(d, "libvlccore.so.9")
+        plugins = os.path.join(d, "plugins")
+        if not (os.path.isfile(lib) and os.path.isfile(core) and os.path.isdir(plugins)):
+            return None
+        os.environ["PYTHON_VLC_LIB_PATH"] = lib
+        os.environ["PYTHON_VLC_MODULE_PATH"] = plugins
+        os.environ["VLC_PLUGIN_PATH"] = plugins
+        certs = os.path.join(d, "certs")
+        if os.path.isdir(certs):
+            # This VLC's secure-connection library comes from the Linux it was
+            # built on and would look for trusted certificates where that
+            # Linux keeps them (Fedora and openSUSE keep them elsewhere), so
+            # every https stream would fail there. It brings its own list.
+            _extra.append(f"--gnutls-dir-trust={certs}")
         return d
     return None
 

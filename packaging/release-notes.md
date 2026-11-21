@@ -5,14 +5,20 @@
 | **Windows 10 / 11** | **BLOODBOS-Radio-Setup-Windows.exe** — double-click it. If Windows says *"Windows protected your PC"*, click **More info → Run anyway**. |
 | **Mac with an Apple chip** (M1–M4) | **BLOODBOS-Radio-macOS-AppleSilicon.dmg** — open it and drag the app to Applications. |
 | **Mac with an Intel chip** | **BLOODBOS-Radio-macOS-Intel.dmg** |
-| **Linux** (any) | paste into a terminal: `curl -fsSL https://raw.githubusercontent.com/korn788/BloodBos-music-request-bot/main/install.sh \| bash` — installs the ready-made app (**BLOODBOS-Radio-Linux-x86_64.tar.gz**) |
+| **Linux** (any) — no terminal | **BLOODBOS-Radio-x86_64.AppImage** — right-click it → **Properties** → allow running it as a program, then double-click it. Everything's inside, VLC too. |
+| **Linux** (any), from a terminal | paste into a terminal: `curl -fsSL https://raw.githubusercontent.com/korn788/BloodBos-music-request-bot/main/install.sh \| bash` — installs the ready-made app (**BLOODBOS-Radio-Linux-x86_64.tar.gz**) |
 | **Ubuntu / Debian / Mint / Pop!_OS** | **bloodbos-radio_amd64.deb** — double-click it. |
 
 First time on a Mac: if macOS says it can't open the app, go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
 Then follow the **Setup** window that opens by itself: click **Connect Twitch**, type your **Kick** channel, and/or enter your **Owncast** address and admin password. Full instructions: [README](https://github.com/korn788/BloodBos-music-request-bot#readme).
 
-## New in 1.0.1
+## New in 1.0.2
+
+- **Linux AppImage — no terminal needed.** One file: allow it to run, double-click it, done. It carries its own VLC and everything else it needs, so there's nothing to install, and it adds itself to your app menu the first time it opens. Tested on Ubuntu, Debian, Fedora, Arch and openSUSE.
+- **Test builds:** every change is published on the [Test build](https://github.com/korn788/BloodBos-music-request-bot/releases/tag/testing) page before it's released (Linux terminal install: add `--testing`).
+
+## In 1.0.1
 
 - **Fixed: the music video replaying the same few seconds right before a song ends.** When a song's audio got stuck for a moment (a network hiccup, or a song that goes quiet at its very end), the video kept playing, got pulled back, and played the same stretch again and again. Now the video waits for the audio — in the OBS widget and in the app's video window.
 - **SoundCloud links that SoundCloud locks now play from YouTube.** SoundCloud encrypts many label releases so only its own app can play them, and gives other apps just a 30-second preview of Go+ tracks — those requests all failed with *"won't play (private, removed or region-locked)"*. The bot now finds the same song on YouTube and says so in chat. When a link really can't play, the reply says why (private or removed, not available in your country, a short link that won't open). Your browser's cookies (used for age-restricted YouTube videos) are no longer sent to SoundCloud, where a logged-in account could get even playable tracks back locked.

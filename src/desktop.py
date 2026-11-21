@@ -86,3 +86,78 @@ def open_path(path):
         except OSError:
             return False
     return open_url(pathlib.Path(path).resolve().as_uri())
+
+
+# ── AppImage: show up in the app menu ───────────────────────────────────────
+# An AppImage is just a file; nothing adds it to the app menu. People who've
+# never used a terminal expect a downloaded app to be there after opening it
+# once, so the app adds itself (and moves the entry along if the file moves).
+# TryExec hides the entry again if the file is deleted.
+
+APP_ID = "bloodbos-radio"
+_APPIMAGE_MARK = "X-BLOODBOS-AppImage=true"
+
+
+def _desktop_exec(path):
+    """A path as a desktop-entry Exec argument (quoting + escaping rules)."""
+    quoted = "".join("\\" + c if c in '"`$\\' else c for c in path)
+    return '"' + quoted.replace("\\", "\\\\").replace("%", "%%") + '"'
+
+
+def integrate_appimage(icon_png=None):
+    """Running from an AppImage: add it to the app menu, or point the menu
+    entry at this copy. Leaves alone an entry made by the install line or the
+    .deb. Returns a line for the log ("" when nothing changed)."""
+    image = os.environ.get("APPIMAGE", "")
+    if not sys.platform.startswith("linux") or not image or not os.path.isfile(image):
+        return ""
+    data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    entry = os.path.join(data, "applications", APP_ID + ".desktop")
+    for d in (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"):
+        if d and os.path.isfile(os.path.join(d, "applications", APP_ID + ".desktop")):
+            return ""                       # installed with the .deb
+    try:
+        with open(entry, encoding="utf-8") as f:
+            old = f.read()
+    except OSError:
+        old = None
+    if old is not None and _APPIMAGE_MARK not in old:
+        return ""                           # installed with the install line
+    icon = os.path.join(data, "icons", "hicolor", "256x256", "apps", APP_ID + ".png")
+    text = "\n".join([
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=BLOODBOS Radio",
+        "GenericName=Stream song requests",
+        "Comment=Song-request radio for Twitch, Kick and Owncast streams",
+        "Exec=" + _desktop_exec(image),
+        "TryExec=" + image.replace("\\", "\\\\"),
+        "Icon=" + APP_ID,
+        "Terminal=false",
+        "Categories=AudioVideo;Audio;Player;",
+        "Keywords=music;stream;twitch;kick;owncast;obs;youtube;soundcloud;",
+        _APPIMAGE_MARK,
+        ""])
+    if old == text and os.path.isfile(icon):
+        return ""
+    try:
+        if icon_png and os.path.isfile(icon_png):
+            os.makedirs(os.path.dirname(icon), exist_ok=True)
+            shutil.copyfile(icon_png, icon)
+        os.makedirs(os.path.dirname(entry), exist_ok=True)
+        tmp = entry + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, entry)
+    except OSError as e:
+        return f"Couldn't add the app to the app menu: {e}"
+    if shutil.which("update-desktop-database"):
+        try:
+            subprocess.run(["update-desktop-database", "-q", os.path.dirname(entry)],
+                           env=clean_env(), timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    return ("Added BLOODBOS Radio to your app menu" if old is None
+            else "The app menu now opens this copy of BLOODBOS Radio")
+
