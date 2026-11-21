@@ -274,7 +274,7 @@ jobs:
               zypper --non-interactive install ca-certificates Mesa-libGL1 Mesa-libEGL1 libX11-6
               libX11-xcb1 libxcb1 fontconfig libfreetype6 libharfbuzz0 libasound2 libexpat1
               libgpg-error0 libuuid1 libz1 libdrm2 libgbm1 libwayland-client0 libfribidi0
-              libgmp10 libdbus-1-3 findutils tar gzip
+              libgmp10 libdbus-1-3 findutils tar gzip gawk grep
     container: ${{ matrix.image }}
     steps:
       - name: A desktop's basic libraries (and no VLC)
