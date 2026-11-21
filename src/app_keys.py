@@ -12,7 +12,10 @@
 #         writes them into _build_keys.py). Without that, the Connect window
 #         walks the streamer through making their own free Kick app instead.
 #
-# Every value can be overridden with an environment variable of the same name.
+# Every value can be overridden with an environment variable named BLOODBOS_
+# plus the name (BLOODBOS_TWITCH_CLIENT_ID, ...). The prefix matters: plain
+# TWITCH_CLIENT_ID-style variables are often set for other Twitch tools, and
+# picking those up would send this app's sign-in to someone else's app.
 
 import os
 
@@ -30,7 +33,7 @@ except ImportError:
 
 for _name in ("TWITCH_CLIENT_ID", "TWITCH_REDIRECT_URI", "KICK_CLIENT_ID",
               "KICK_CLIENT_SECRET", "KICK_REDIRECT_URI"):
-    _v = os.environ.get(_name, "").strip()
+    _v = os.environ.get("BLOODBOS_" + _name, "").strip()
     if _v:
         globals()[_name] = _v
 
