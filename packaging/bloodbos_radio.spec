@@ -37,10 +37,8 @@ hiddenimports = [
 ]
 if os.path.isfile(os.path.join(SRC, "_build_keys.py")):
     hiddenimports.append("_build_keys")
-if IS_WIN:
+if IS_WIN:   # media keys (pynput is only installed on Windows)
     hiddenimports += ["pynput.keyboard._win32", "pynput.mouse._win32", "pynput._util.win32"]
-elif not IS_MAC:
-    hiddenimports += ["pynput.keyboard._xorg", "pynput.mouse._xorg", "pynput._util.xorg"]
 
 for pkg in ("curl_cffi", "certifi"):
     d, b, h = collect_all(pkg)

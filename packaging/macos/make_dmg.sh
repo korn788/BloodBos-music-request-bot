@@ -19,6 +19,15 @@ NAME="BLOODBOS Radio"
 rm -rf "$APP/Contents/Frameworks/vlc"
 ditto "$VLC" "$APP/Contents/Frameworks/vlc"
 
+# VLC ships "universal" libraries (Intel + Apple chip code in every file).
+# Keep only this build's half — the download gets roughly 40 MB smaller.
+ARCH="$(uname -m)"
+find "$APP/Contents/Frameworks/vlc" -type f -name "*.dylib" -print0 | while IFS= read -r -d '' f; do
+    if lipo -archs "$f" 2>/dev/null | grep -qw "$ARCH" && [ "$(lipo -archs "$f" | wc -w)" -gt 1 ]; then
+        lipo "$f" -thin "$ARCH" -output "$f.thin" && mv "$f.thin" "$f"
+    fi
+done
+
 # Strip download quarantine flags picked up on the build machine, then sign
 # every library inside-out, then the app itself.
 xattr -cr "$APP" || true

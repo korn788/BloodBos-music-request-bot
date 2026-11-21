@@ -32,8 +32,8 @@ jobs:
   tests:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PY }}" }
       - name: System packages (VLC, Qt libraries)
         run: |
@@ -48,8 +48,8 @@ jobs:
     needs: tests
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PY }}" }
       - run: pip install -r requirements.txt pyinstaller
       - name: Build keys
@@ -103,13 +103,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-14, optional: false }        # Apple Silicon
+          - { runner: macos-15, optional: false }        # Apple Silicon
           - { runner: macos-15-intel, optional: true }   # Intel Macs
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.optional }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PY }}" }
       - run: pip install -r requirements.txt pyinstaller
       - name: Build keys
@@ -143,8 +143,8 @@ jobs:
     needs: tests
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PY }}" }
       - name: System packages
         run: |
@@ -185,10 +185,10 @@ jobs:
         image: ["ubuntu:24.04", "debian:12", "fedora:latest", "archlinux:latest"]
     container: ${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Refresh the package lists (fresh container)
         run: |
-          if command -v pacman >/dev/null; then pacman -Sy --noconfirm; fi
+          if command -v pacman >/dev/null; then pacman -Syu --noconfirm; fi
           if command -v apt-get >/dev/null; then apt-get update -q; fi
       - name: Run install.sh
         run: bash install.sh --from . --yes --no-launch
@@ -203,7 +203,7 @@ jobs:
       needs.macos.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with: { path: artifacts }
       - name: Publish the release

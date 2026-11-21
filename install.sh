@@ -188,6 +188,10 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 "$VENV/bin/python" -m pip install --quiet --upgrade pip wheel >/dev/null 2>&1 || true
 say "Installing the app's libraries"
+# If a library has no ready-made download for this Python yet (brand-new
+# Python versions), build its plain-Python version — no compiler needed.
+export AIOHTTP_NO_EXTENSIONS=1 MULTIDICT_NO_EXTENSIONS=1 YARL_NO_EXTENSIONS=1 \
+       FROZENLIST_NO_EXTENSIONS=1 PROPCACHE_NO_EXTENSIONS=1
 "$VENV/bin/python" -m pip install --quiet --upgrade -r "$PROG/requirements.txt" \
     || die "Couldn't install the app's libraries (see the messages above)."
 
